@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
+use acpi::{aml, Aml};
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::DeviceInfoForFDT;
 use arch::DeviceType;
@@ -24,12 +25,9 @@ use devices::virtio::{
 };
 use devices::BusDevice;
 use kvm_ioctls::{IoEventAddress, VmFd};
-use linux_loader::cmdline as kernel_cmdline;
 use logger::info;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-#[cfg(target_arch = "x86_64")]
-use vm_memory::GuestAddress;
 
 use crate::resource_manager::{AllocPolicy, ResourceManager};
 
@@ -38,8 +36,6 @@ use crate::resource_manager::{AllocPolicy, ResourceManager};
 pub enum Error {
     /// Failed to perform an operation on the bus.
     Bus(devices::BusError),
-    /// Appending to kernel command line failed.
-    Cmdline(linux_loader::cmdline::Error),
     /// The device couldn't be found.
     DeviceNotFound,
     /// Failure in creating or cloning an event fd.
@@ -64,9 +60,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::Bus(err) => write!(f, "failed to perform bus operation: {}", err),
-            Error::Cmdline(err) => {
-                write!(f, "unable to add device to kernel command line: {}", err)
-            }
             Error::EventFd(err) => write!(f, "failed to create or clone event descriptor: {}", err),
             Error::IncorrectDeviceType => write!(f, "incorrect device type"),
             Error::InternalDeviceError(err) => write!(f, "device error: {}", err),
@@ -82,7 +75,7 @@ impl fmt::Display for Error {
 
 type Result<T> = ::std::result::Result<T, Error>;
 
-/// This represents the size of the mmio device specified to the kernel as a cmdline option
+/// This represents the size of the mmio device specified to the kernel through ACPI
 /// It has to be larger than 0x100 (the offset where the configuration space starts from
 /// the beginning of the memory mapped device registers) + the size of the configuration space
 /// Currently hardcoded to 4K.
@@ -182,41 +175,16 @@ impl MMIODeviceManager {
         )
     }
 
-    /// Append a registered virtio-over-MMIO device to the kernel cmdline.
-    #[cfg(target_arch = "x86_64")]
-    pub fn add_virtio_device_to_cmdline(
-        cmdline: &mut kernel_cmdline::Cmdline,
-        device_info: &MMIODeviceInfo,
-    ) -> Result<()> {
-        // as per doc, [virtio_mmio.]device=<size>@<baseaddr>:<irq> needs to be appended
-        // to kernel commandline for virtio mmio devices to get recognized
-        // the size parameter has to be transformed to KiB, so dividing hexadecimal value in
-        // bytes to 1024; further, the '{}' formatting rust construct will automatically
-        // transform it to decimal
-        cmdline
-            .add_virtio_mmio_device(
-                device_info.len,
-                GuestAddress(device_info.addr),
-                device_info.irqs[0],
-                None,
-            )
-            .map_err(Error::Cmdline)
-    }
-
-    /// Allocate slot and register an already created virtio-over-MMIO device. Also Adds the device
-    /// to the boot cmdline.
+    /// Allocate slot and register an already created virtio-over-MMIO device.
     pub fn register_mmio_virtio_for_boot(
         &mut self,
         resource_manager: &mut ResourceManager,
         vm: &VmFd,
         device_id: String,
         mmio_device: MmioTransport,
-        _cmdline: &mut kernel_cmdline::Cmdline,
     ) -> Result<MMIODeviceInfo> {
         let device_info = Self::allocate_mmio_resources(resource_manager, 1)?;
         self.register_mmio_virtio(vm, device_id, mmio_device, &device_info)?;
-        #[cfg(target_arch = "x86_64")]
-        Self::add_virtio_device_to_cmdline(_cmdline, &device_info)?;
         Ok(device_info)
     }
 
@@ -251,7 +219,7 @@ impl MMIODeviceManager {
 
     #[cfg(target_arch = "aarch64")]
     /// Append the registered early console to the kernel cmdline.
-    pub fn add_mmio_serial_to_cmdline(&self, cmdline: &mut kernel_cmdline::Cmdline) -> Result<()> {
+    pub fn add_mmio_serial_to_cmdline(&self, cmdline: &mut Cmdline) -> Result<()> {
         let device_info = self
             .id_to_dev_info
             .get(&(DeviceType::Serial, DeviceType::Serial.to_string()))
@@ -454,6 +422,37 @@ impl MMIODeviceManager {
     }
 }
 
+impl Aml for MMIODeviceManager {
+    fn append_aml_bytes(&self, v: &mut Vec<u8>) {
+        let mut device_cnt = 1u8;
+        let _ = self.for_each_virtio_device::<_, ()>(
+            |_device_type, _device_id, device_info, _bus_device| {
+                aml::Device::new(
+                    format!("VR{:02}", device_cnt).as_str().into(),
+                    vec![
+                        &aml::Name::new("_HID".into(), &"LNRO0005"),
+                        &aml::Name::new("_UID".into(), &(device_cnt as u8)),
+                        &aml::Name::new(
+                            "_CRS".into(),
+                            &aml::ResourceTemplate::new(vec![
+                                &aml::Memory32Fixed::new(
+                                    true,
+                                    device_info.addr as u32,
+                                    device_info.len as u32,
+                                ),
+                                &aml::Interrupt::new(true, true, false, false, device_info.irqs[0]),
+                            ]),
+                        ),
+                    ],
+                )
+                .append_aml_bytes(v);
+                device_cnt += 1;
+                Ok(())
+            },
+        );
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 impl DeviceInfoForFDT for MMIODeviceInfo {
     fn addr(&self) -> u64 {
@@ -489,7 +488,6 @@ mod tests {
             guest_mem: GuestMemoryMmap,
             resource_manager: &mut ResourceManager,
             device: Arc<Mutex<dyn devices::virtio::VirtioDevice>>,
-            cmdline: &mut kernel_cmdline::Cmdline,
             dev_id: &str,
         ) -> Result<u64> {
             let mmio_device = MmioTransport::new(guest_mem, device);
@@ -498,7 +496,6 @@ mod tests {
                 vm,
                 dev_id.to_string(),
                 mmio_device,
-                cmdline,
             )?;
             Ok(device_info.addr)
         }
@@ -595,7 +592,6 @@ mod tests {
         let mut device_manager = MMIODeviceManager::new().unwrap();
         let mut resource_manager = ResourceManager::new().unwrap();
 
-        let mut cmdline = kernel_cmdline::Cmdline::new(4096);
         let dummy = Arc::new(Mutex::new(DummyDevice::new()));
         #[cfg(target_arch = "x86_64")]
         assert!(builder::setup_interrupt_controller(&mut vm).is_ok());
@@ -603,14 +599,7 @@ mod tests {
         assert!(builder::setup_interrupt_controller(&mut vm, 1).is_ok());
 
         assert!(device_manager
-            .register_virtio_test_device(
-                vm.fd(),
-                guest_mem,
-                &mut resource_manager,
-                dummy,
-                &mut cmdline,
-                "dummy"
-            )
+            .register_virtio_test_device(vm.fd(), guest_mem, &mut resource_manager, dummy, "dummy")
             .is_ok());
     }
 
@@ -627,7 +616,6 @@ mod tests {
         let mut device_manager = MMIODeviceManager::new().unwrap();
         let mut resource_manager = ResourceManager::new().unwrap();
 
-        let mut cmdline = kernel_cmdline::Cmdline::new(4096);
         #[cfg(target_arch = "x86_64")]
         assert!(builder::setup_interrupt_controller(&mut vm).is_ok());
         #[cfg(target_arch = "aarch64")]
@@ -640,7 +628,6 @@ mod tests {
                     guest_mem.clone(),
                     &mut resource_manager,
                     Arc::new(Mutex::new(DummyDevice::new())),
-                    &mut cmdline,
                     "dummy1",
                 )
                 .unwrap();
@@ -654,7 +641,6 @@ mod tests {
                         guest_mem,
                         &mut resource_manager,
                         Arc::new(Mutex::new(DummyDevice::new())),
-                        &mut cmdline,
                         "dummy2"
                     )
                     .unwrap_err()
@@ -678,7 +664,6 @@ mod tests {
             // When adding a new variant here, don't forget to also call this function with it.
             let msg = match err {
                 Error::Bus(_) => format!("{}{:?}", err, err),
-                Error::Cmdline(_) => format!("{}{:?}", err, err),
                 Error::DeviceNotFound => format!("{}{:?}", err, err),
                 Error::EventFd(_) => format!("{}{:?}", err, err),
                 Error::IncorrectDeviceType => format!("{}{:?}", err, err),
@@ -692,7 +677,6 @@ mod tests {
             assert!(!msg.is_empty());
         };
         check_fmt_err(Error::Bus(devices::BusError::Overlap));
-        check_fmt_err(Error::Cmdline(linux_loader::cmdline::Error::TooLarge));
         check_fmt_err(Error::DeviceNotFound);
         check_fmt_err(Error::EventFd(io::Error::from_raw_os_error(0)));
         check_fmt_err(Error::IncorrectDeviceType);
@@ -724,20 +708,12 @@ mod tests {
 
         let mut device_manager = MMIODeviceManager::new().unwrap();
         let mut resource_manager = ResourceManager::new().unwrap();
-        let mut cmdline = kernel_cmdline::Cmdline::new(4096);
         let dummy = Arc::new(Mutex::new(DummyDevice::new()));
 
         let type_id = dummy.lock().unwrap().device_type();
         let id = String::from("foo");
         let addr = device_manager
-            .register_virtio_test_device(
-                vm.fd(),
-                guest_mem,
-                &mut resource_manager,
-                dummy,
-                &mut cmdline,
-                &id,
-            )
+            .register_virtio_test_device(vm.fd(), guest_mem, &mut resource_manager, dummy, &id)
             .unwrap();
         assert!(device_manager
             .get_device(DeviceType::Virtio(type_id), &id)
@@ -759,14 +735,7 @@ mod tests {
         let dummy2 = Arc::new(Mutex::new(DummyDevice::new()));
         let id2 = String::from("foo2");
         device_manager
-            .register_virtio_test_device(
-                vm.fd(),
-                mem_clone,
-                &mut resource_manager,
-                dummy2,
-                &mut cmdline,
-                &id2,
-            )
+            .register_virtio_test_device(vm.fd(), mem_clone, &mut resource_manager, dummy2, &id2)
             .unwrap();
 
         let mut count = 0;
