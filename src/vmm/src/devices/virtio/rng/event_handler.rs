@@ -7,13 +7,25 @@ use event_manager::{EventOps, Events, MutEventSubscriber};
 use logger::{error, warn};
 use utils::epoll::EventSet;
 
-use super::{Entropy, RNG_QUEUE};
+use super::{Entropy, LeakQueue, LEAK_QUEUE_1, LEAK_QUEUE_2, RNG_QUEUE};
 use crate::devices::virtio::VirtioDevice;
 
 impl Entropy {
     fn register_runtime_events(&self, ops: &mut EventOps) {
         if let Err(err) = ops.add(Events::new(&self.queue_events()[RNG_QUEUE], EventSet::IN)) {
             error!("entropy: Failed to register queue event: {err}");
+        }
+        if let Err(err) = ops.add(Events::new(
+            &self.queue_events()[LEAK_QUEUE_1],
+            EventSet::IN,
+        )) {
+            error!("entropy: Failed to register leak queue 2 event: {err}");
+        }
+        if let Err(err) = ops.add(Events::new(
+            &self.queue_events()[LEAK_QUEUE_2],
+            EventSet::IN,
+        )) {
+            error!("entropy: Failed to register leak queue 2 event: {err}");
         }
         if let Err(err) = ops.add(Events::new(self.rate_limiter(), EventSet::IN)) {
             error!("entropy: Failed to register rate-limiter event: {err}");
@@ -68,8 +80,13 @@ impl MutEventSubscriber for Entropy {
             return;
         }
 
-        if source == self.queue_events()[RNG_QUEUE].as_raw_fd() {
+        let queue_events = self.queue_events();
+        if source == queue_events[RNG_QUEUE].as_raw_fd() {
             self.process_entropy_queue_event()
+        } else if source == queue_events[LEAK_QUEUE_1].as_raw_fd() {
+            self.process_leak_queue_event(LeakQueue::LeakQueue1)
+        } else if source == queue_events[LEAK_QUEUE_2].as_raw_fd() {
+            self.process_leak_queue_event(LeakQueue::LeakQueue2)
         } else if source == self.rate_limiter().as_raw_fd() {
             self.process_rate_limiter_event();
         } else if source == self.activate_event().as_raw_fd() {

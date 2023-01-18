@@ -251,6 +251,10 @@ pub fn create_snapshot(
 
     snapshot_memory_to_file(vmm, &params.mem_file_path, &params.snapshot_type)?;
 
+    if let Err(err) = vmm.signal_entropy_device() {
+        warn!("Error signaling entropy leak: {err}");
+    }
+
     Ok(())
 }
 

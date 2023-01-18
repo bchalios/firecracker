@@ -85,8 +85,8 @@ use crate::device_manager::mmio::MMIODeviceManager;
 use crate::devices::legacy::{IER_RDA_BIT, IER_RDA_OFFSET};
 use crate::devices::virtio::balloon::Error as BalloonError;
 use crate::devices::virtio::{
-    Balloon, BalloonConfig, BalloonStats, Block, MmioTransport, Net, BALLOON_DEV_ID, TYPE_BALLOON,
-    TYPE_BLOCK, TYPE_NET,
+    Balloon, BalloonConfig, BalloonStats, Block, Entropy, MmioTransport, Net, BALLOON_DEV_ID,
+    TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_RNG,
 };
 use crate::devices::BusDevice;
 use crate::memory_snapshot::SnapshotMemory;
@@ -701,6 +701,16 @@ impl Vmm {
         self.mmio_device_manager
             .with_virtio_device_with_id(TYPE_NET, net_id, |net: &mut Net| {
                 net.patch_rate_limiters(rx_bytes, rx_ops, tx_bytes, tx_ops);
+                Ok(())
+            })
+            .map_err(Error::DeviceManager)
+    }
+
+    pub(crate) fn signal_entropy_device(&mut self) -> Result<()> {
+        self.mmio_device_manager
+            .with_virtio_device_with_id(TYPE_RNG, "rng", |entropy_dev: &mut Entropy| {
+                info!("Found entropy device. Signaling entropy leak");
+                entropy_dev.signal_entropy_leak();
                 Ok(())
             })
             .map_err(Error::DeviceManager)

@@ -11,13 +11,17 @@ use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 
 use crate::devices::virtio::persist::Error as VirtioStateError;
-use crate::devices::virtio::rng::{Entropy, Error as EntropyError, NUM_QUEUES, QUEUE_SIZE};
+use crate::devices::virtio::rng::{
+    Entropy, Error as EntropyError, LeakQueue, NUM_QUEUES, QUEUE_SIZE,
+};
 use crate::devices::virtio::{VirtioDeviceState, TYPE_RNG};
 
 #[derive(Clone, Versionize)]
 pub struct EntropyState {
     virtio_state: VirtioDeviceState,
     rate_limiter_state: RateLimiterState,
+    active_leak_queue: LeakQueue,
+    signaled_leak_queue: Option<LeakQueue>,
 }
 
 pub struct EntropyConstructorArgs(GuestMemoryMmap);
@@ -44,6 +48,8 @@ impl Persist<'_> for Entropy {
         EntropyState {
             virtio_state: VirtioDeviceState::from_device(self),
             rate_limiter_state: self.rate_limiter().save(),
+            active_leak_queue: self.get_active_leak_queue().clone(),
+            signaled_leak_queue: self.get_signaled_leak_queue().clone(),
         }
     }
 
@@ -63,6 +69,8 @@ impl Persist<'_> for Entropy {
         entropy.set_avail_features(state.virtio_state.avail_features);
         entropy.set_acked_features(state.virtio_state.acked_features);
         entropy.set_irq_status(state.virtio_state.interrupt_status);
+        entropy.set_active_leak_queue(state.active_leak_queue.clone());
+        entropy.set_signaled_leak_queue(state.signaled_leak_queue.clone());
         if state.virtio_state.activated {
             entropy.set_activated(constructor_args.0);
         }
@@ -102,6 +110,14 @@ mod tests {
         assert_eq!(restored.is_activated(), entropy.is_activated());
         assert_eq!(restored.avail_features(), entropy.avail_features());
         assert_eq!(restored.acked_features(), entropy.acked_features());
+        assert_eq!(
+            restored.get_active_leak_queue(),
+            entropy.get_active_leak_queue()
+        );
+        assert_eq!(
+            restored.get_signaled_leak_queue(),
+            entropy.get_signaled_leak_queue()
+        );
         assert_eq!(
             restored.interrupt_status().load(Ordering::Relaxed),
             entropy.interrupt_status().load(Ordering::Relaxed)

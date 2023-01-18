@@ -540,6 +540,9 @@ pub fn build_microvm_from_snapshot(
             .map_err(MicrovmStateError::RestoreDevices)?;
     vmm.emulate_serial_init()?;
 
+    // TODO: proper error handling
+    vmm.signal_entropy_device().unwrap();
+
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
     vmm.start_vcpus(
         vcpus,
