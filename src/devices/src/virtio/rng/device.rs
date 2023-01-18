@@ -10,13 +10,13 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use rate_limiter::{RateLimiter, TokenType};
 use utils::eventfd::EventFd;
-use virtio_gen::virtio_rng::VIRTIO_F_VERSION_1;
+use virtio_gen::virtio_rng::{VIRTIO_F_RNG_F_LEAK, VIRTIO_F_VERSION_1};
 use vm_memory::{GuestMemoryError, GuestMemoryMmap};
 
-use super::{NUM_QUEUES, QUEUE_SIZE, RNG_QUEUE};
+use super::{LeakQueue, NUM_QUEUES, QUEUE_SIZE, RNG_QUEUE};
 use crate::virtio::device::{IrqTrigger, IrqType};
-use crate::virtio::iovec::IoVecBuffer;
-use crate::virtio::{ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_RNG};
+use crate::virtio::iovec::{Error as IoVecBufferError, IoVecBuffer};
+use crate::virtio::{ActivateResult, DescriptorChain, DeviceState, Queue, VirtioDevice, TYPE_RNG};
 use crate::Error as DeviceError;
 
 pub const ENTROPY_DEV_ID: &str = "rng";
@@ -29,6 +29,10 @@ pub enum Error {
     GuestMemory(#[from] GuestMemoryError),
     #[error("Could not get random bytes: {0}")]
     Random(#[from] rand::Error),
+    #[error("Error parsing descriptor")]
+    ParseDescriptor(#[from] IoVecBufferError),
+    #[error("Buffers size do not match")]
+    BufferSizeNotMatch,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -47,6 +51,8 @@ pub struct Entropy {
 
     // Device specific fields
     rate_limiter: RateLimiter,
+    signaled_leak_queue: Option<LeakQueue>,
+    active_leakq: LeakQueue,
 }
 
 impl Entropy {
@@ -64,7 +70,7 @@ impl Entropy {
         let irq_trigger = IrqTrigger::new()?;
 
         Ok(Self {
-            avail_features: 1 << VIRTIO_F_VERSION_1,
+            avail_features: 1 << VIRTIO_F_VERSION_1 | 1 << VIRTIO_F_RNG_F_LEAK,
             acked_features: 0u64,
             activate_event,
             device_state: DeviceState::Inactive,
@@ -72,6 +78,8 @@ impl Entropy {
             queue_events,
             irq_trigger,
             rate_limiter,
+            signaled_leak_queue: None,
+            active_leakq: LeakQueue::LeakQueue1,
         })
     }
 
@@ -179,6 +187,139 @@ impl Entropy {
         }
     }
 
+    fn handle_fill_on_leak_request(
+        mem: &GuestMemoryMmap,
+        head: DescriptorChain,
+        iovec: &mut IoVecBuffer,
+    ) -> Result<usize> {
+        debug!(
+            "entropy: Handling fill-on-leak request at guest buffer: [{};{}]",
+            head.addr.0, head.len
+        );
+
+        iovec.parse_write_only(mem, head)?;
+
+        let mut buffer = vec![0u8; iovec.write_len()];
+        OsRng.try_fill_bytes(&mut buffer)?;
+
+        // It's ok to unwrap here! We have a non-zero length buffer and we write
+        // in all of it.
+        let bytes = iovec.write_at(&buffer, 0).unwrap();
+
+        Ok(bytes)
+    }
+
+    fn handle_copy_on_leak_request(
+        mem: &GuestMemoryMmap,
+        head: DescriptorChain,
+        iovec: &mut IoVecBuffer,
+    ) -> Result<usize> {
+        iovec.parse(mem, head)?;
+
+        if iovec.read_len() != iovec.write_len() {
+            return Err(Error::BufferSizeNotMatch);
+        }
+
+        let src = iovec.read();
+        let dst = iovec.write();
+
+        // TODO: clarify if read-part and write-part can be non-contiguous in memory
+        // TODO: clarify if read-part and write-part are guaranteed to be non-overlapping
+
+        // SAFETY: This is safe, because the two iovecs that describe valid guest memory
+        // (`IoVecBuffer` parsing perfromed the necessary checks), which are non-overlapping
+        // and they are equal in length.
+        unsafe {
+            let dst_ptr = dst[0].iov_base.cast::<u8>();
+            let src_ptr = src[0].iov_base as *const u8;
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, dst[0].iov_len);
+        }
+
+        Ok(dst[0].iov_len)
+    }
+
+    fn handle_leak_queue(&mut self, leakq: LeakQueue) {
+        // This is safe since we checked in the event handler that the device is activated.
+        let mem = self.device_state.mem().unwrap();
+        let queue = &mut self.queues[usize::from(&leakq)];
+        let mut used_any = false;
+
+        let mut iovec = IoVecBuffer::new();
+        while let Some(head) = queue.pop(mem) {
+            // If the first buffer is write-only, this is a fill-on-leak command,
+            // otherwise it is a copy-on-leak command and there should be one additional
+            // write-only buffer.
+            let bytes = if head.is_write_only() {
+                Self::handle_fill_on_leak_request(mem, head, &mut iovec)
+            } else {
+                Self::handle_copy_on_leak_request(mem, head, &mut iovec)
+            }
+            .unwrap_or_else(|err| {
+                error!("entropy: Error handling leak queue request: {err}");
+                METRICS.entropy.entropy_event_fails.inc();
+                0
+            }) as u32;
+
+            match queue.add_used(mem, iovec.descriptor_id().unwrap(), bytes) {
+                Ok(()) => {
+                    used_any = true;
+                }
+                Err(err) => {
+                    error!("entropy: Could not add used descriptor to leak queue {leakq:?}: {err}");
+                    METRICS.entropy.entropy_event_fails.inc();
+                    // If we are not able to add a buffer to the used queue, something
+                    // is probably seriously wrong, so just stop processing additional
+                    // buffers
+                    break;
+                }
+            }
+        }
+
+        if used_any {
+            self.signal_used_queue().unwrap_or_else(|err| {
+                error!("entropy: Could not signal used queue: {err:?}");
+                METRICS.entropy.entropy_event_fails.inc();
+            })
+        }
+    }
+
+    fn process_leak_queue(&mut self, leakq: LeakQueue) {
+        match &self.signaled_leak_queue {
+            Some(queue) if *queue == leakq => {
+                debug!("entropy: Handling signaled leak queue {leakq:?}");
+                self.handle_leak_queue(leakq);
+            }
+            _ => {
+                debug!("entropy: Processing not signaled leak queue {leakq:?} deferred");
+            }
+        }
+    }
+
+    pub(crate) fn process_leak_queue_event(&mut self, leakq: LeakQueue) {
+        if let Err(err) = self.queue_events[usize::from(&leakq)].read() {
+            error!("entropy: Failed to read leak queue {leakq:?} event: {err}");
+            METRICS.entropy.entropy_event_fails.inc();
+        } else {
+            debug!("entropy: Handling leak queue {leakq:?} event");
+            self.process_leak_queue(leakq);
+        }
+    }
+
+    pub fn signal_entropy_leak(&mut self) {
+        debug!(
+            "entropy: Leak event. Signalling active leak queue: {:?}",
+            self.active_leakq
+        );
+        self.handle_leak_queue(self.active_leakq.clone());
+        let new_active_queue = self.active_leakq.other();
+        self.signaled_leak_queue =
+            Some(std::mem::replace(&mut self.active_leakq, new_active_queue));
+        debug!(
+            "entropy: signaled queue: {:?} active queue: {:?}",
+            self.signaled_leak_queue, self.active_leakq
+        );
+    }
+
     pub(crate) fn process_entropy_queue_event(&mut self) {
         if let Err(err) = self.queue_events[RNG_QUEUE].read() {
             error!("Failed to read entropy queue event: {err}");
@@ -207,6 +348,8 @@ impl Entropy {
 
     pub fn process_virtio_queues(&mut self) {
         self.process_entropy_queue();
+        self.process_leak_queue(LeakQueue::LeakQueue1);
+        self.process_leak_queue(LeakQueue::LeakQueue2);
     }
 
     pub fn rate_limiter(&self) -> &RateLimiter {
@@ -231,6 +374,22 @@ impl Entropy {
 
     pub(crate) fn activate_event(&self) -> &EventFd {
         &self.activate_event
+    }
+
+    pub(crate) fn get_active_leak_queue(&self) -> &LeakQueue {
+        &self.active_leakq
+    }
+
+    pub(crate) fn set_active_leak_queue(&mut self, queue: LeakQueue) {
+        self.active_leakq = queue;
+    }
+
+    pub(crate) fn get_signaled_leak_queue(&self) -> &Option<LeakQueue> {
+        &self.signaled_leak_queue
+    }
+
+    pub(crate) fn set_signaled_leak_queue(&mut self, queue: Option<LeakQueue>) {
+        self.signaled_leak_queue = queue;
     }
 }
 
@@ -318,7 +477,10 @@ mod tests {
     fn test_new() {
         let entropy_dev = default_entropy();
 
-        assert_eq!(entropy_dev.avail_features(), 1 << VIRTIO_F_VERSION_1);
+        assert_eq!(
+            entropy_dev.avail_features(),
+            1 << VIRTIO_F_VERSION_1 | 1 << VIRTIO_F_RNG_F_LEAK
+        );
         assert_eq!(entropy_dev.acked_features(), 0);
         assert!(!entropy_dev.is_activated());
     }
@@ -380,7 +542,7 @@ mod tests {
     fn test_virtio_device_features() {
         let mut entropy_dev = default_entropy();
 
-        let features = 1 << VIRTIO_F_VERSION_1;
+        let features = 1 << VIRTIO_F_VERSION_1 | 1 << VIRTIO_F_RNG_F_LEAK;
 
         assert_eq!(entropy_dev.avail_features_by_page(0), features as u32);
         assert_eq!(

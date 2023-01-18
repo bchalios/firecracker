@@ -9,7 +9,8 @@
     dead_code,
     non_snake_case,
     clippy::ptr_as_ptr,
-    clippy::undocumented_unsafe_blocks
+    clippy::undocumented_unsafe_blocks,
+    clippy::cast_lossless
 )]
 
 pub const VIRTIO_F_NOTIFY_ON_EMPTY: u32 = 24;
@@ -19,4 +20,5 @@ pub const VIRTIO_F_ACCESS_PLATFORM: u32 = 33;
 pub const VIRTIO_F_IOMMU_PLATFORM: u32 = 33;
 pub const VIRTIO_F_RING_PACKED: u32 = 34;
 pub const VIRTIO_F_ORDER_PLATFORM: u32 = 36;
+pub const VIRTIO_F_RNG_F_LEAK: u32 = 0;
 pub const VIRTIO_F_SR_IOV: u32 = 37;
