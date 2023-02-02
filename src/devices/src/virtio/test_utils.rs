@@ -339,73 +339,31 @@ pub(crate) mod test {
         fn num_queues() -> usize;
     }
 
-    /// A helper type to allow testing VirtIO devices
+    /// A helper type to allow interacting with a VirtIO transport memory
     ///
-    /// `VirtioTestHelper` provides functionality to allow testing a VirtIO device by
-    /// 1. Emulating the guest size of things (essentially the handling of Virtqueues) and
-    /// 2. Emulating an event loop that handles device specific events
-    ///
-    /// It creates and handles a guest memory address space, which uses for keeping the
-    /// Virtqueues of the device and storing data, i.e. storing data described by DescriptorChains
-    /// that the guest would pass to the device during normal operation
-    pub struct VirtioTestHelper<'a, T>
-    where
-        T: VirtioTestDevice + MutEventSubscriber,
-    {
-        event_manager: EventManager<Arc<Mutex<T>>>,
-        _subscriber_id: SubscriberId,
-        device: Arc<Mutex<T>>,
-        virtqueues: Vec<VirtQueue<'a>>,
-    }
+    /// It provides functionality for handling virtqueues. It allows adding buffers in the queue
+    /// as if a guest would have added them and then pop buffers fro the queue, as a VMM would
+    /// do.
+    pub struct VirtioTestTransport<'a>(Vec<VirtQueue<'a>>);
 
-    impl<'a, T> VirtioTestHelper<'a, T>
-    where
-        T: VirtioTestDevice + MutEventSubscriber,
-    {
-        const QUEUE_SIZE: u16 = 16;
-
+    impl<'a> VirtioTestTransport<'a> {
         // Helper function to create a set of Virtqueues for the device
-        fn create_virtqueues(mem: &'a GuestMemoryMmap, num_queues: usize) -> Vec<VirtQueue> {
-            (0..num_queues)
+        pub fn new(mem: &'a GuestMemoryMmap, num_queues: usize, queue_size: u16) -> Self {
+            let vecs = (0..num_queues)
                 .scan(GuestAddress(0), |next_addr, _| {
-                    let vqueue = VirtQueue::new(*next_addr, mem, Self::QUEUE_SIZE);
+                    let vqueue = VirtQueue::new(*next_addr, mem, queue_size);
                     // Address for the next virt queue will be the first aligned address after
                     // the end of this one.
                     *next_addr = vqueue.end().unchecked_align_up(VirtqDesc::ALIGNMENT);
                     Some(vqueue)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+
+            Self(vecs)
         }
 
-        /// Create a new Virtio Device test helper
-        pub fn new(mem: &'a GuestMemoryMmap, mut device: T) -> VirtioTestHelper<'a, T> {
-            let mut event_manager = EventManager::new().unwrap();
-
-            let virtqueues = Self::create_virtqueues(mem, T::num_queues());
-            let queues = virtqueues.iter().map(|vq| vq.create_queue()).collect();
-            device.set_queues(queues);
-            let device = Arc::new(Mutex::new(device));
-            let _subscriber_id = event_manager.add_subscriber(device.clone());
-
-            Self {
-                event_manager,
-                _subscriber_id,
-                device,
-                virtqueues,
-            }
-        }
-
-        /// Get a (locked) reference to the device
-        pub fn device(&mut self) -> MutexGuard<T> {
-            self.device.lock().unwrap()
-        }
-
-        /// Activate the device
-        pub fn activate_device(&mut self, mem: &'a GuestMemoryMmap) {
-            self.device.lock().unwrap().activate(mem.clone()).unwrap();
-            // Process the activate event
-            let ev_count = self.event_manager.run_with_timeout(100).unwrap();
-            assert_eq!(ev_count, 1);
+        pub fn create_queues(&self) -> Vec<Queue> {
+            self.0.iter().map(|vq| vq.create_queue()).collect()
         }
 
         /// Get the start of the data region
@@ -414,12 +372,12 @@ pub(crate) mod test {
         /// is the first address after the memory occupied by the last Virtqueue
         /// used by the device
         pub fn data_address(&self) -> u64 {
-            self.virtqueues.last().unwrap().end().raw_value()
+            self.0.last().unwrap().end().raw_value()
         }
 
-        /// Add a new Descriptor in one of the device's queues
+        /// Add a new Descriptor in the virtqueue
         ///
-        /// This function adds in one of the queues of the device a DescriptorChain at some offset
+        /// This function adds in one of the queues a DescriptorChain at some offset
         /// in the "data range" of the guest memory. The number of descriptors to create is passed
         /// as a list of descriptors (a triple of (index, length, flags)).
         ///
@@ -438,10 +396,7 @@ pub(crate) mod test {
             addr_offset: u64,
             desc_list: &[(u16, u32, u16)],
         ) {
-            let device = self.device.lock().unwrap();
-
-            let event_fd = &device.queue_events()[queue];
-            let vq = &self.virtqueues[queue];
+            let vq = &self.0[queue];
 
             // Create the descriptor chain
             let mut iter = desc_list.iter().peekable();
@@ -455,9 +410,6 @@ pub(crate) mod test {
                 }
 
                 addr += u64::from(len);
-                // Add small random gaps between descriptor addresses in order to make sure we
-                // don't blindly read contiguous memory.
-                addr += u64::from(utils::rand::xor_pseudo_rng_u32()) % 10;
             }
 
             // Mark the chain as available.
@@ -466,6 +418,83 @@ pub(crate) mod test {
                 vq.avail.ring[ring_index as usize].set(index);
                 vq.avail.idx.set(ring_index + 1);
             }
+        }
+
+        // Check the data in one of the queues
+        pub fn check_data(&mut self, queue: usize, desc_list: &[(u16, &[u8])]) {
+            let vq = &self.0[queue];
+            for (index, expected) in desc_list {
+                vq.dtable[*index as usize].check_data(expected)
+            }
+        }
+    }
+
+    /// A helper type to allow testing VirtIO devices
+    ///
+    /// `VirtioTestHelper` provides functionality to allow testing a VirtIO device by
+    /// 1. Emulating the guest size of things (essentially the handling of Virtqueues) and
+    /// 2. Emulating an event loop that handles device specific events
+    ///
+    /// It creates and handles a guest memory address space, which uses for keeping the
+    /// Virtqueues of the device and storing data, i.e. storing data described by DescriptorChains
+    /// that the guest would pass to the device during normal operation
+    pub struct VirtioTestHelper<'a, T>
+    where
+        T: VirtioTestDevice + MutEventSubscriber,
+    {
+        event_manager: EventManager<Arc<Mutex<T>>>,
+        _subscriber_id: SubscriberId,
+        device: Arc<Mutex<T>>,
+        transport: VirtioTestTransport<'a>,
+    }
+
+    impl<'a, T> VirtioTestHelper<'a, T>
+    where
+        T: VirtioTestDevice + MutEventSubscriber,
+    {
+        const QUEUE_SIZE: u16 = 16;
+
+        /// Create a new Virtio Device test helper
+        pub fn new(mem: &'a GuestMemoryMmap, mut device: T) -> VirtioTestHelper<'a, T> {
+            let mut event_manager = EventManager::new().unwrap();
+
+            let transport = VirtioTestTransport::new(mem, T::num_queues(), Self::QUEUE_SIZE);
+            let queues = transport.create_queues();
+            device.set_queues(queues);
+            let device = Arc::new(Mutex::new(device));
+            let _subscriber_id = event_manager.add_subscriber(device.clone());
+
+            Self {
+                event_manager,
+                _subscriber_id,
+                device,
+                transport,
+            }
+        }
+
+        /// Get a (locked) reference to the device
+        pub fn device(&mut self) -> MutexGuard<T> {
+            self.device.lock().unwrap()
+        }
+
+        /// Activate the device
+        pub fn activate_device(&mut self, mem: &'a GuestMemoryMmap) {
+            self.device.lock().unwrap().activate(mem.clone()).unwrap();
+            // Process the activate event
+            let ev_count = self.event_manager.run_with_timeout(100).unwrap();
+            assert_eq!(ev_count, 1);
+        }
+
+        // Add a descriptor chain to one of the device's qeues
+        pub fn add_desc_chain(
+            &mut self,
+            queue: usize,
+            addr_offset: u64,
+            desc_list: &[(u16, u32, u16)],
+        ) {
+            self.transport.add_desc_chain(queue, addr_offset, desc_list);
+            let device = self.device.lock().unwrap();
+            let event_fd = &device.queue_events()[queue];
             event_fd.write(1).unwrap();
         }
 
