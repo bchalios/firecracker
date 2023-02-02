@@ -14,7 +14,7 @@ use virtio_gen::virtio_rng::VIRTIO_F_VERSION_1;
 
 use super::{NUM_QUEUES, QUEUE_SIZE, RNG_QUEUE};
 use crate::devices::virtio::device::{IrqTrigger, IrqType};
-use crate::devices::virtio::iovec::IoVecBufferMut;
+use crate::devices::virtio::iovec::IoVecBuffer;
 use crate::devices::virtio::{ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_RNG};
 use crate::devices::Error as DeviceError;
 
@@ -102,13 +102,13 @@ impl Entropy {
         rate_limiter.manual_replenish(bytes, TokenType::Bytes);
     }
 
-    fn handle_one(&self, iovec: &mut IoVecBufferMut) -> Result<u32> {
+    fn handle_one(&self, iovec: &mut IoVecBuffer) -> Result<u32> {
         // If guest provided us with an empty buffer just return directly
-        if iovec.len() == 0 {
+        if iovec.write_len() == 0 {
             return Ok(0);
         }
 
-        let mut rand_bytes = vec![0; iovec.len()];
+        let mut rand_bytes = vec![0; iovec.write_len()];
         rand::fill(&mut rand_bytes).map_err(|err| {
             METRICS.entropy.host_rng_fails.inc();
             err
@@ -123,21 +123,21 @@ impl Entropy {
         let mem = self.device_state.mem().unwrap();
 
         let mut used_any = false;
+        let mut iovec = IoVecBuffer::new();
         while let Some(desc) = self.queues[RNG_QUEUE].pop(mem) {
-            let index = desc.index;
             METRICS.entropy.entropy_event_count.inc();
 
-            let bytes = match IoVecBufferMut::from_descriptor_chain(mem, desc) {
-                Ok(mut iovec) => {
+            let bytes = match iovec.parse_write_only(mem, desc) {
+                Ok(()) => {
                     debug!(
                         "entropy: guest request for {} bytes of entropy",
-                        iovec.len()
+                        iovec.write_len()
                     );
 
                     // Check for available rate limiting budget.
                     // If not enough budget is available, leave the request descriptor in the queue
                     // to handle once we do have budget.
-                    if !Self::rate_limit_request(&mut self.rate_limiter, iovec.len() as u64) {
+                    if !Self::rate_limit_request(&mut self.rate_limiter, iovec.write_len() as u64) {
                         debug!("entropy: throttling entropy queue");
                         METRICS.entropy.entropy_rate_limiter_throttled.inc();
                         self.queues[RNG_QUEUE].undo_pop();
@@ -157,7 +157,7 @@ impl Entropy {
                 }
             };
 
-            match self.queues[RNG_QUEUE].add_used(mem, index, bytes) {
+            match self.queues[RNG_QUEUE].add_used(mem, iovec.descriptor_id().unwrap(), bytes) {
                 Ok(_) => {
                     used_any = true;
                     METRICS.entropy.entropy_bytes.add(bytes as usize);
@@ -421,17 +421,18 @@ mod tests {
         th.add_desc_chain(RNG_QUEUE, 0, &[(2, 0, VIRTQ_DESC_F_WRITE)]);
 
         let mut entropy_dev = th.device();
+        let mut iovec = IoVecBuffer::new();
 
         // This should succeed, we just added two descriptors
         let desc = entropy_dev.queues_mut()[RNG_QUEUE].pop(&mem).unwrap();
         assert!(matches!(
-            IoVecBufferMut::from_descriptor_chain(&mem, desc,),
+            iovec.parse_write_only(&mem, desc),
             Err(crate::devices::virtio::iovec::Error::ReadOnlyDescriptor)
         ));
 
         // This should succeed, we should have one more descriptor
         let desc = entropy_dev.queues_mut()[RNG_QUEUE].pop(&mem).unwrap();
-        let mut iovec = IoVecBufferMut::from_descriptor_chain(&mem, desc).unwrap();
+        iovec.parse_write_only(&mem, desc).unwrap();
         assert!(entropy_dev.handle_one(&mut iovec).is_ok());
     }
 

@@ -184,12 +184,12 @@ impl Tap {
 
     /// Write an `IoVecBuffer` to tap
     pub(crate) fn write_iovec(&mut self, buffer: &IoVecBuffer) -> IoResult<usize> {
-        let iovcnt = buffer.iovec_count() as i32;
-        let iov = buffer.as_iovec_ptr();
+        let iov = buffer.read();
 
-        // SAFETY: `writev` is safe. Called with a valid tap fd, the iovec pointer and length
-        // is provide by the `IoVecBuffer` implementation and we check the return value.
-        let ret = unsafe { libc::writev(self.tap_file.as_raw_fd(), iov, iovcnt) };
+        let ret =
+            // SAFETY: `writev` is safe. Called with a valid tap fd, the iovec pointer and length
+            // is provide by the `IoVecBuffer` implementation and we check the return value.
+            unsafe { libc::writev(self.tap_file.as_raw_fd(), iov.as_ptr(), iov.len() as i32) };
         if ret == -1 {
             return Err(IoError::last_os_error());
         }
@@ -360,7 +360,7 @@ pub mod tests {
 
         assert!(tap.write_iovec(&scattered).is_ok());
 
-        let mut read_buf = vec![0u8; scattered.len()];
+        let mut read_buf = vec![0u8; scattered.read_len()];
         assert!(tap_traffic_simulator.pop_rx_packet(&mut read_buf));
         assert_eq!(
             &read_buf[..PAYLOAD_SIZE - VNET_HDR_SIZE],
