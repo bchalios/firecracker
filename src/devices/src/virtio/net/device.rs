@@ -435,7 +435,7 @@ impl Net {
 
         if let Some(ns) = mmds_ns {
             if ns.is_mmds_frame(headers) {
-                let mut frame = vec![0u8; frame_iovec.len() - vnet_hdr_len()];
+                let mut frame = vec![0u8; frame_iovec.read_len() - vnet_hdr_len()];
                 // Ok to unwrap here, because we are passing a buffer that has the exact size
                 // of the `IoVecBuffer` minus the VNET headers.
                 frame_iovec.read_at(&mut frame, vnet_hdr_len()).unwrap();
@@ -443,7 +443,7 @@ impl Net {
                 METRICS.mmds.rx_accepted.inc();
 
                 // MMDS frames are not accounted by the rate limiter.
-                Self::rate_limiter_replenish_op(rate_limiter, frame_iovec.len() as u64);
+                Self::rate_limiter_replenish_op(rate_limiter, frame_iovec.read_len() as u64);
 
                 // MMDS consumed the frame.
                 return Ok(true);
@@ -463,7 +463,7 @@ impl Net {
 
         match Self::write_tap(tap, frame_iovec) {
             Ok(_) => {
-                METRICS.net.tx_bytes_count.add(frame_iovec.len());
+                METRICS.net.tx_bytes_count.add(frame_iovec.read_len());
                 METRICS.net.tx_packets_count.inc();
                 METRICS.net.tx_count.inc();
             }
@@ -560,20 +560,20 @@ impl Net {
         let mut used_any = false;
         let tx_queue = &mut self.queues[TX_INDEX];
 
+        let mut buffer = IoVecBuffer::new();
         while let Some(head) = tx_queue.pop_or_enable_notification(mem) {
-            let head_index = head.index;
             // Parse IoVecBuffer from descriptor head
-            let buffer = match IoVecBuffer::from_descriptor_chain(mem, head) {
+            match buffer.parse_read_only(mem, head) {
                 Ok(buffer) => buffer,
                 Err(_) => {
                     METRICS.net.tx_fails.inc();
                     tx_queue
-                        .add_used(mem, head_index, 0)
+                        .add_used(mem, buffer.descriptor_id().unwrap(), 0)
                         .map_err(DeviceError::QueueError)?;
                     continue;
                 }
             };
-            if !Self::rate_limiter_consume_op(&mut self.tx_rate_limiter, buffer.len() as u64) {
+            if !Self::rate_limiter_consume_op(&mut self.tx_rate_limiter, buffer.read_len() as u64) {
                 tx_queue.undo_pop();
                 METRICS.net.tx_rate_limiter_throttled.inc();
                 break;
@@ -594,7 +594,7 @@ impl Net {
             }
 
             tx_queue
-                .add_used(mem, head_index, 0)
+                .add_used(mem, buffer.descriptor_id().unwrap(), 0)
                 .map_err(DeviceError::QueueError)?;
             used_any = true;
         }
@@ -1452,7 +1452,7 @@ pub mod tests {
         let dst_ip = Ipv4Addr::new(169, 254, 169, 254);
 
         let (frame_buf, frame_len) = create_arp_request(src_mac, src_ip, dst_mac, dst_ip);
-        let buffer = IoVecBuffer::from(&frame_buf[..frame_len]);
+        let buffer = IoVecBuffer::from(vec![&frame_buf[..frame_len]]);
 
         let mut headers = vec![0; frame_hdr_len()];
         buffer.read_at(&mut headers, 0).unwrap();
@@ -1492,7 +1492,7 @@ pub mod tests {
         let dst_ip = Ipv4Addr::new(10, 1, 1, 1);
 
         let (frame_buf, frame_len) = create_arp_request(guest_mac, guest_ip, dst_mac, dst_ip);
-        let buffer = IoVecBuffer::from(&frame_buf[..frame_len]);
+        let buffer = IoVecBuffer::from(vec![&frame_buf[..frame_len]]);
         let mut headers = vec![0; frame_hdr_len()];
 
         // Check that a legit MAC doesn't affect the spoofed MAC metric.
