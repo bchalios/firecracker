@@ -17,6 +17,7 @@ pub use vm_memory_upstream::{
     GuestMemoryError, GuestMemoryRegion, GuestUsize, MemoryRegionAddress, MmapRegion,
     VolatileMemory, VolatileMemoryError,
 };
+pub use vm_memory_upstream::guest_memory::GuestAddressSpace;
 
 pub type GuestMemoryMmap = vm_memory_upstream::GuestMemoryMmap<Option<AtomicBitmap>>;
 pub type GuestRegionMmap = vm_memory_upstream::GuestRegionMmap<Option<AtomicBitmap>>;

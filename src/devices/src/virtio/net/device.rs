@@ -7,6 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::{cmp, mem, result};
@@ -14,19 +15,26 @@ use std::{cmp, mem, result};
 use dumbo::pdu::arp::ETH_IPV4_FRAME_LEN;
 use dumbo::pdu::ethernet::{EthernetFrame, PAYLOAD_OFFSET};
 use libc::EAGAIN;
-use logger::{error, warn, IncMetric, METRICS};
+use logger::{debug, error, warn, IncMetric, METRICS};
 use mmds::data_store::Mmds;
 use mmds::ns::MmdsNetworkStack;
 use rate_limiter::{BucketUpdate, RateLimiter, TokenType};
 use utils::eventfd::EventFd;
 use utils::net::mac::MacAddr;
+use vhost::net::VhostNet;
+use vhost::vhost_kern::net::Net as VhostNetBackend;
+use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
+use virtio_gen::virtio_blk::VIRTIO_F_IOMMU_PLATFORM;
 use virtio_gen::virtio_net::{
-    virtio_net_hdr_v1, VIRTIO_F_VERSION_1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM,
+    virtio_net_hdr_v1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM,
     VIRTIO_NET_F_GUEST_TSO4, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO,
     VIRTIO_NET_F_MAC,
 };
-use virtio_gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
-use vm_memory::{ByteValued, Bytes, GuestMemoryError, GuestMemoryMmap};
+
+use vm_memory::{
+    Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap,
+    GuestMemoryRegion,
+};
 
 const FRAME_HEADER_MAX_LEN: usize = PAYLOAD_OFFSET + ETH_IPV4_FRAME_LEN;
 
@@ -36,10 +44,12 @@ use crate::virtio::net::{
     Error, NetQueue, Result, MAX_BUFFER_SIZE, QUEUE_SIZES, RX_INDEX, TX_INDEX,
 };
 use crate::virtio::{
-    ActivateResult, DescriptorChain, DeviceState, IrqTrigger, IrqType, Queue, VirtioDevice,
-    TYPE_NET,
+    ActivateError, ActivateResult, DescriptorChain, DeviceState, IrqTrigger, IrqType, Queue,
+    VirtioDevice, TYPE_NET,
 };
 use crate::{report_net_event_fail, Error as DeviceError};
+
+use super::NUM_QUEUES;
 
 enum FrontendError {
     AddUsed,
@@ -122,7 +132,28 @@ pub struct Net {
     pub(crate) activate_evt: EventFd,
 
     pub mmds_ns: Option<MmdsNetworkStack>,
+    vhost_backend: VhostNetBackend,
 }
+
+/// Creates a [`GuestMemoryMmap`] with a single region of the given size starting at guest physical
+/// address 0
+pub fn single_region_mem(region_size: usize) -> GuestMemoryMmap {
+    vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), region_size)], false)
+        .unwrap()
+}
+
+/// Creates a [`GuestMemoryMmap`] with a single region  of size 65536 (= 0x10000 hex) starting at
+/// guest physical address 0
+pub fn default_mem() -> GuestMemoryMmap {
+    single_region_mem(0x10000)
+}
+
+const TAP_FLAGS: u64 = 1 << VIRTIO_NET_F_GUEST_CSUM
+    | 1 << VIRTIO_NET_F_CSUM
+    | 1 << VIRTIO_NET_F_GUEST_TSO4
+    | 1 << VIRTIO_NET_F_GUEST_UFO
+    | 1 << VIRTIO_NET_F_HOST_TSO4
+    | 1 << VIRTIO_NET_F_HOST_UFO;
 
 impl Net {
     pub fn new_with_tap(
@@ -132,14 +163,10 @@ impl Net {
         rx_rate_limiter: RateLimiter,
         tx_rate_limiter: RateLimiter,
     ) -> Result<Self> {
-        let mut avail_features = 1 << VIRTIO_NET_F_GUEST_CSUM
-            | 1 << VIRTIO_NET_F_CSUM
-            | 1 << VIRTIO_NET_F_GUEST_TSO4
-            | 1 << VIRTIO_NET_F_GUEST_UFO
-            | 1 << VIRTIO_NET_F_HOST_TSO4
-            | 1 << VIRTIO_NET_F_HOST_UFO
-            | 1 << VIRTIO_F_VERSION_1
-            | 1 << VIRTIO_RING_F_EVENT_IDX;
+        let vhost_backend = VhostNetBackend::new().unwrap();
+
+        let mut avail_features = TAP_FLAGS | vhost_backend.get_features().unwrap();
+        debug!("Net: will advertise these features {:#08x}", avail_features);
 
         let mut config_space = ConfigSpace::default();
         if let Some(mac) = guest_mac {
@@ -175,6 +202,7 @@ impl Net {
             device_state: DeviceState::Inactive,
             activate_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?,
             mmds_ns: None,
+            vhost_backend,
         })
     }
 
@@ -805,16 +833,95 @@ impl VirtioDevice for Net {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
-        let event_idx = self.has_feature(u64::from(VIRTIO_RING_F_EVENT_IDX));
-        if event_idx {
-            for queue in &mut self.queues {
-                queue.enable_notif_suppression();
-            }
+        debug!("net: Setting up vhost-net");
+        self.vhost_backend.set_owner().expect("Could not set owner");
+
+        debug!("net: TAP device features: {:#08x}", TAP_FLAGS);
+        debug!("net: acked features: {:#08x}", self.acked_features);
+        debug!(
+            "net: setting vhost features: {:#08x}",
+            self.acked_features & !TAP_FLAGS
+        );
+        self.vhost_backend
+            //.set_features(self.acked_features & !TAP_FLAGS)
+            .set_features(
+                self.vhost_backend.get_features().unwrap()
+                    & !(1u64 << VIRTIO_F_IOMMU_PLATFORM)
+                    & self.acked_features,
+            )
+            .expect("net: could not set vhost-net features");
+
+        let num_regions = mem.num_regions();
+        let mut vhost_regions: Vec<VhostUserMemoryRegionInfo> = Vec::with_capacity(num_regions);
+        for region in mem.iter() {
+            let (mmap_handle, mmap_offset) = match region.file_offset() {
+                Some(file_offset) => (file_offset.file().as_raw_fd(), file_offset.start()),
+                None => (-1, 0),
+            };
+
+            let vhost_region = VhostUserMemoryRegionInfo {
+                guest_phys_addr: region.start_addr().raw_value(),
+                memory_size: region.len(),
+                userspace_addr: region.as_ptr() as u64,
+                mmap_offset,
+                mmap_handle,
+            };
+
+            vhost_regions.push(vhost_region);
+        }
+
+        self.vhost_backend
+            .set_mem_table(vhost_regions.as_slice())
+            .expect("net: could not setup vhost-net memory table");
+
+        for qidx in 0..NUM_QUEUES {
+            let queue = &self.queues[qidx];
+            self.vhost_backend
+                .set_vring_num(qidx, queue.actual_size())
+                .expect("net: could not set queue size to vhost-net");
+        }
+
+        for qidx in 0..NUM_QUEUES {
+            debug!("net: setting queue {qidx} for vhost-net");
+            let queue = &self.queues[qidx];
+            let queue_evt = &self.queue_evts[qidx];
+
+            let config_data = VringConfigData {
+                queue_max_size: queue.get_max_size(),
+                queue_size: queue.actual_size(),
+                flags: 0u32,
+                desc_table_addr: mem.get_host_address(queue.desc_table).unwrap() as u64,
+                used_ring_addr: mem.get_host_address(queue.used_ring).unwrap() as u64,
+                avail_ring_addr: mem.get_host_address(queue.avail_ring).unwrap() as u64,
+                log_addr: None,
+            };
+
+            debug!("VringConfigData => queue_max_size: {} queue_size: {} flags: {} desc_table_addr: {:#016x} used_ring_addr: {:#016x} avail_ring_addr: {:#016x} log_addr: {:?}",
+            config_data.queue_max_size, config_data.queue_size, config_data.flags, config_data.desc_table_addr, config_data.used_ring_addr, config_data.avail_ring_addr, config_data.log_addr);
+
+            self.vhost_backend
+                .set_vring_addr(&&mem, qidx, &config_data)
+                .expect("net: could not set vring address to vhost-net");
+            self.vhost_backend
+                .set_vring_base(qidx, queue.avail_idx(&mem).0)
+                .expect("net: could not set vring base to vhost-net");
+            self.vhost_backend
+                .set_vring_call(qidx, &self.irq_trigger.irq_evt)
+                .expect("net: could not set irq trigger to vhost-net");
+            self.vhost_backend
+                .set_vring_kick(qidx, queue_evt)
+                .expect("net: could not set vring kick to vhost-net");
+        }
+
+        for qidx in 0..NUM_QUEUES {
+            self.vhost_backend
+                .set_backend(qidx, Some(self.tap.inner()))
+                .expect("net: Could not set backend to vhost-net");
         }
 
         if self.activate_evt.write(1).is_err() {
-            error!("Net: Cannot write to activate_evt");
-            return Err(super::super::ActivateError::BadActivate);
+            error!("net: Could not write to activate_evt");
+            return Err(ActivateError::BadActivate);
         }
         self.device_state = DeviceState::Activated(mem);
         Ok(())

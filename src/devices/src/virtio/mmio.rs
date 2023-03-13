@@ -236,7 +236,10 @@ impl BusDevice for MmioTransport {
                     }
                     0x34 => self.with_queue(0, |q| u32::from(q.get_max_size())),
                     0x44 => self.with_queue(0, |q| u32::from(q.ready)),
-                    0x60 => self.interrupt_status.load(Ordering::SeqCst) as u32,
+                    0x60 => {
+                        1
+                        //self.interrupt_status.load(Ordering::SeqCst) as u32,
+                    }
                     0x70 => self.device_status,
                     0xfc => self.config_generation,
                     _ => {

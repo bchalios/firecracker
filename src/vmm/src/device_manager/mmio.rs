@@ -14,7 +14,7 @@ use devices::legacy::RTCDevice;
 use devices::legacy::SerialDevice;
 use devices::pseudo::BootTimer;
 use devices::virtio::{
-    Balloon, Block, MmioTransport, Net, VirtioDevice, TYPE_BALLOON, TYPE_BLOCK, TYPE_NET,
+    Balloon, Block, MmioTransport, VirtioDevice, TYPE_BALLOON, TYPE_BLOCK, TYPE_NET,
     TYPE_VSOCK,
 };
 use devices::BusDevice;
@@ -417,6 +417,7 @@ impl MMIODeviceManager {
                     }
                 }
                 TYPE_NET => {
+                    /*
                     let net = virtio.as_mut_any().downcast_mut::<Net>().unwrap();
                     // If device is activated, kick the net queue(s) to make up for any
                     // pending or in-flight epoll events we may have not captured in snapshot.
@@ -426,6 +427,7 @@ impl MMIODeviceManager {
                         info!("kick net {}.", id);
                         net.process_virtio_queues();
                     }
+                    */
                 }
                 TYPE_VSOCK => {
                     // Vsock has complicated protocol that isn't resilient to any packet loss,

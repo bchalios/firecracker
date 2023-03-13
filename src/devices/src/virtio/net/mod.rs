@@ -52,6 +52,9 @@ pub enum Error {
     /// The VNET header is missing from the frame
     #[error("The VNET header is missing from the frame")]
     VnetHeaderMissing,
+    /// Vhost error
+    #[error("Vhost-net error: {0}")]
+    VhostError(#[from]vhost::Error),
 }
 
 pub type Result<T> = result::Result<T, Error>;

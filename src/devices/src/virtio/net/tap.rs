@@ -153,6 +153,10 @@ impl Tap {
         })
     }
 
+    pub fn inner(&self) -> &File {
+        &self.tap_file
+    }
+
     pub fn if_name_as_str(&self) -> &str {
         let len = self
             .if_name

@@ -335,6 +335,7 @@ dependencies = [
  "utils",
  "versionize",
  "versionize_derive",
+ "vhost",
  "virtio_gen",
  "vm-memory 0.3.0",
  "vm-superio",
@@ -1136,6 +1137,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "vhost"
+version = "0.6.0"
+source = "git+https://github.com/bchalios/vhost.git?branch=fix_vhost_kern#33b18e1a57115c5a55b5e39bb7de4c784e075373"
+dependencies = [
+ "bitflags",
+ "libc",
+ "vm-memory 0.10.0",
+ "vmm-sys-util",
 ]
 
 [[package]]
