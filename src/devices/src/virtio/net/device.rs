@@ -14,7 +14,7 @@ use std::{cmp, mem, result};
 use dumbo::pdu::arp::ETH_IPV4_FRAME_LEN;
 use dumbo::pdu::ethernet::{EthernetFrame, PAYLOAD_OFFSET};
 use libc::EAGAIN;
-use logger::{error, warn, IncMetric, METRICS};
+use logger::{error, IncMetric, METRICS};
 use mmds::data_store::Mmds;
 use mmds::ns::MmdsNetworkStack;
 use rate_limiter::{BucketUpdate, RateLimiter, TokenType};
@@ -26,7 +26,7 @@ use virtio_gen::virtio_net::{
     VIRTIO_NET_F_MAC,
 };
 use virtio_gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
-use vm_memory::{ByteValued, Bytes, GuestMemoryError, GuestMemoryMmap};
+use vm_memory::{ByteValued, GuestMemoryMmap};
 
 const FRAME_HEADER_MAX_LEN: usize = PAYLOAD_OFFSET + ETH_IPV4_FRAME_LEN;
 
@@ -36,18 +36,9 @@ use crate::virtio::net::{
     Error, NetQueue, Result, MAX_BUFFER_SIZE, QUEUE_SIZES, RX_INDEX, TX_INDEX,
 };
 use crate::virtio::{
-    ActivateResult, DescriptorChain, DeviceState, IrqTrigger, IrqType, Queue, VirtioDevice,
-    TYPE_NET,
+    ActivateResult, DeviceState, IrqTrigger, IrqType, Queue, VirtioDevice, TYPE_NET,
 };
 use crate::{report_net_event_fail, Error as DeviceError};
-
-enum FrontendError {
-    AddUsed,
-    DescriptorChainTooSmall,
-    EmptyQueue,
-    GuestMemory(GuestMemoryError),
-    ReadOnlyDescriptor,
-}
 
 pub(crate) const fn vnet_hdr_len() -> usize {
     mem::size_of::<virtio_net_hdr_v1>()
@@ -308,100 +299,50 @@ impl Net {
         success
     }
 
-    /// Write a slice in a descriptor chain
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the descriptor chain is too short or
-    /// an inappropriate (read only) descriptor is found in the chain
-    fn write_to_descriptor_chain(
-        mem: &GuestMemoryMmap,
-        data: &[u8],
-        head: DescriptorChain,
-    ) -> std::result::Result<(), FrontendError> {
-        let mut chunk = data;
-        let mut next_descriptor = Some(head);
-
-        while let Some(descriptor) = &next_descriptor {
-            if !descriptor.is_write_only() {
-                return Err(FrontendError::ReadOnlyDescriptor);
-            }
-
-            let len = std::cmp::min(chunk.len(), descriptor.len as usize);
-            match mem.write_slice(&chunk[..len], descriptor.addr) {
-                Ok(()) => {
-                    METRICS.net.rx_count.inc();
-                    chunk = &chunk[len..];
-                }
-                Err(err) => {
-                    error!("Failed to write slice: {:?}", err);
-                    if let GuestMemoryError::PartialBuffer { .. } = err {
-                        METRICS.net.rx_partial_writes.inc();
-                    }
-                    return Err(FrontendError::GuestMemory(err));
-                }
-            }
-
-            // If chunk is empty we are done here.
-            if chunk.is_empty() {
-                METRICS.net.rx_bytes_count.add(data.len());
-                METRICS.net.rx_packets_count.inc();
-                return Ok(());
-            }
-
-            next_descriptor = descriptor.next_descriptor();
-        }
-
-        warn!("Receiving buffer is too small to hold frame of current size");
-        Err(FrontendError::DescriptorChainTooSmall)
-    }
-
-    // Copies a single frame from `self.rx_frame_buf` into the guest.
-    fn do_write_frame_to_guest(&mut self) -> std::result::Result<(), FrontendError> {
-        // This is safe since we checked in the event handler that the device is activated.
-        let mem = self.device_state.mem().unwrap();
-
-        let queue = &mut self.queues[RX_INDEX];
-        let head_descriptor = queue.pop_or_enable_notification(mem).ok_or_else(|| {
-            METRICS.net.no_rx_avail_buffer.inc();
-            FrontendError::EmptyQueue
-        })?;
-        let head_index = head_descriptor.index;
-
-        let result = Self::write_to_descriptor_chain(
-            mem,
-            &self.rx_frame_buf[..self.rx_bytes_read],
-            head_descriptor,
-        );
-        // Mark the descriptor chain as used. If an error occurred, skip the descriptor chain.
-        let used_len = if result.is_err() {
-            METRICS.net.rx_fails.inc();
-            0
-        } else {
-            self.rx_bytes_read as u32
-        };
-        queue.add_used(mem, head_index, used_len).map_err(|err| {
-            error!("Failed to add available descriptor {}: {}", head_index, err);
-            FrontendError::AddUsed
-        })?;
-
-        result
-    }
-
     // Copies a single frame from `self.rx_frame_buf` into the guest. In case of an error retries
     // the operation if possible. Returns true if the operation was successfull.
     fn write_frame_to_guest(&mut self) -> bool {
-        let max_iterations = self.queues[RX_INDEX].actual_size();
+        // This is safe since we checked in the event handler that the device is activated.
+        let mem = self.device_state.mem().unwrap();
+        let queue = &mut self.queues[RX_INDEX];
+        let max_iterations = queue.actual_size();
+        let buffer = &self.rx_frame_buf[..self.rx_bytes_read];
+        let mut iovec = IoVecBuffer::new();
+
         for _ in 0..max_iterations {
-            match self.do_write_frame_to_guest() {
-                Ok(()) => return true,
-                Err(FrontendError::EmptyQueue) | Err(FrontendError::AddUsed) => {
+            let head = match queue.pop_or_enable_notification(mem) {
+                Some(head) => head,
+                None => {
+                    METRICS.net.no_rx_avail_buffer.inc();
                     return false;
                 }
-                Err(_) => {
-                    // retry
-                    continue;
+            };
+
+            let index = head.index;
+            let bytes_used = match iovec.parse_write_only_with_length(mem, head, buffer.len()) {
+                Ok(()) => {
+                    iovec.write_at(buffer, 0).unwrap();
+                    METRICS.net.rx_count.inc();
+                    METRICS.net.rx_bytes_count.add(buffer.len());
+                    METRICS.net.rx_packets_count.inc();
+                    buffer.len() as u32
                 }
+                Err(_) => {
+                    METRICS.net.rx_fails.inc();
+                    0u32
+                }
+            };
+
+            match queue.add_used(mem, index, bytes_used) {
+                Ok(()) => {}
+                Err(err) => {
+                    error!("net: Failed to add available descriptor {index}: {err}");
+                    return false;
+                }
+            }
+
+            if bytes_used != 0 {
+                return true;
             }
         }
 
