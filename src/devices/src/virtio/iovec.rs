@@ -16,6 +16,9 @@ pub enum Error {
     /// We found a read-only descriptor where write-only was expected
     #[error("Tried to create an 'IoVecMut` from a read-only descriptor chain")]
     ReadOnlyDescriptor,
+    /// We found a descriptor chain that is too small
+    #[error("DescriptorChain is too short")]
+    DescriptorChainTooShort,
     /// An error happened with guest memory handling
     #[error("Guest memory error: {0}")]
     GuestMemory(#[from] vm_memory::GuestMemoryError),
@@ -280,6 +283,55 @@ impl<'a> IoVecBuffer<'a> {
         }
 
         Ok(())
+    }
+
+    /// Parse a write-only `DescriptorChain` of fixed length in the `IoVecBuffer`
+    ///
+    /// Same as `parse_write_only` but also specify the required length of the
+    /// buffer. It will only parse up to `length` bytes, otherwise it will error.
+    ///
+    /// # Arguments
+    ///
+    /// * `mem` - The guest memory mmap object
+    /// * `head` - The head of the descriptor chain passed to us by the guest
+    /// * `lenth` - The size of bytes to parse
+    ///
+    /// # Returns
+    ///
+    /// This will return an error if:
+    ///
+    /// * One of the descriptors passed describes invalid guest memory
+    /// * A read-only descriptor is found in the chain
+    /// * The descriptor chain is smaller than `lenght`
+    pub(crate) fn parse_write_only_with_length(
+        &mut self,
+        mem: &GuestMemoryMmap,
+        head: DescriptorChain,
+        length: usize,
+    ) -> Result<()> {
+        self.clear();
+        self.desc_id = Some(head.index);
+
+        if length == 0 {
+            return Ok(());
+        }
+
+        let mut buffer_len = 0;
+        for desc in head {
+            if !desc.is_write_only() {
+                return Err(Error::ReadOnlyDescriptor);
+            }
+
+            self.write_len += usize::try_from(desc.len).unwrap();
+            self.vecs.push(iovec_try_from_descriptor_chain(mem, &desc)?);
+
+            buffer_len += usize::try_from(desc.len).unwrap();
+            if buffer_len >= length {
+                return Ok(());
+            }
+        }
+
+        Err(Error::DescriptorChainTooShort)
     }
 
     pub(crate) fn descriptor_id(&self) -> Option<u16> {
