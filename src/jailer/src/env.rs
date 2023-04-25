@@ -43,6 +43,10 @@ const DEV_URANDOM_WITH_NUL: &[u8] = b"/dev/urandom\0";
 const DEV_URANDOM_MAJOR: u32 = 1;
 const DEV_URANDOM_MINOR: u32 = 9;
 
+const DEV_VHOST_NET: &[u8] = b"/dev/vhost-net\0";
+const DEV_VHOST_NET_MAJOR: u32 = 10;
+const DEV_VHOST_NET_MINOR: u32 = 238;
+
 // Relevant folders inside the jail that we create or/and for which we change ownership.
 // We need /dev in order to be able to create /dev/kvm and /dev/net/tun device.
 // We need /run for the default location of the api socket.
@@ -569,6 +573,8 @@ impl Env {
         self.mknod_and_own_dev(DEV_NET_TUN_WITH_NUL, DEV_NET_TUN_MAJOR, DEV_NET_TUN_MINOR)?;
         // Do the same for /dev/kvm with (major, minor) = (10, 232).
         self.mknod_and_own_dev(DEV_KVM_WITH_NUL, DEV_KVM_MAJOR, DEV_KVM_MINOR)?;
+        // Do the same for `/dev/vhost-net` with (major, minor) = (10, 238)
+        self.mknod_and_own_dev(DEV_VHOST_NET, DEV_VHOST_NET_MAJOR, DEV_VHOST_NET_MINOR)?;
         // And for /dev/urandom with (major, minor) = (1, 9).
         // If the device is not accessible on the host, output a warning to inform user that MMDS
         // version 2 will not be available to use.

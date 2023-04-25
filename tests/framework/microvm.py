@@ -443,6 +443,7 @@ class Microvm:
                 {"metadata": os.path.basename(self.metadata_file)}
             )
 
+        self.jailer.extra_args.update( {"no-seccomp": None} )
         jailer_param_list = self.jailer.construct_param_list()
 
         # When the daemonize flag is on, we want to clone-exec into the
@@ -590,6 +591,7 @@ class Microvm:
             cmd = (
                 [self.bin_cloner_path] + [self._jailer_binary_path] + jailer_param_list
             )
+            print(cmd)
             _p = utils.run_cmd(cmd)
             # Terrible hack to make the tests fail when starting the
             # jailer fails with a panic. This is needed because we can't
@@ -687,6 +689,7 @@ class Microvm:
             tx_rate_limiter=tx_rate_limiter,
             rx_rate_limiter=rx_rate_limiter,
         )
+        print(self.log_data)
         assert self._api_session.is_status_no_content(response.status_code)
 
         return tap, host_ip, guest_ip
