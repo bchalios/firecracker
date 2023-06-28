@@ -579,7 +579,7 @@ def test_balloon_snapshot(bin_cloner_path, microvm_factory, guest_kernel, rootfs
     assert stats_after_snap["available_memory"] > latest_stats["available_memory"]
 
 
-def test_snapshot_compatibility(microvm_factory, guest_kernel, rootfs):
+def test_snapshot_compatibility(microvm_factory, guest_kernel, rootfs, network_config):
     """
     Test that the balloon serializes correctly.
     """
@@ -594,6 +594,7 @@ def test_snapshot_compatibility(microvm_factory, guest_kernel, rootfs):
         mem_size_mib=256,
         track_dirty_pages=diff_snapshots,
     )
+    vm.ssh_network_config(network_config, "1")
 
     # Add a memory balloon with stats enabled.
     response = vm.balloon.put(
@@ -602,6 +603,8 @@ def test_snapshot_compatibility(microvm_factory, guest_kernel, rootfs):
     assert vm.api_session.is_status_no_content(response.status_code)
 
     vm.start()
+
+    vm.ssh.execute_command("true")
 
     logger.info("Create %s #0.", snapshot_type)
 
