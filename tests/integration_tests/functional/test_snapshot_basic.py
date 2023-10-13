@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -88,6 +89,7 @@ def test_5_snapshots(
         microvm = microvm_factory.build()
         microvm.spawn()
         microvm.restore_from_snapshot(snapshot, resume=True)
+        sleep(10)
         # Test vsock guest-initiated connections.
         path = os.path.join(
             microvm.path, make_host_port_path(VSOCK_UDS_PATH, ECHO_SERVER_PORT)
