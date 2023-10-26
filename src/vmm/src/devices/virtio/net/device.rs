@@ -9,23 +9,29 @@
 use std::io::Read;
 use std::io::Write;
 use std::net::Ipv4Addr;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use std::{cmp, mem};
 
 use libc::EAGAIN;
-use log::{error, warn};
+use log::{debug, error, warn};
 use utils::eventfd::EventFd;
 use utils::net::mac::MacAddr;
 use utils::u64_to_usize;
-use vm_memory::GuestMemoryError;
+use vhost::net::VhostNet;
+use vhost::vhost_kern::net::Net as VhostNetBackend;
+use vhost::vhost_kern::vhost_binding::{VHOST_F_LOG_ALL, VHOST_NET_F_VIRTIO_NET_HDR};
+use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
+use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryRegion};
 
-use crate::devices::virtio::gen::virtio_blk::VIRTIO_F_VERSION_1;
 use crate::devices::virtio::gen::virtio_net::{
-    virtio_net_hdr_v1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4,
-    VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC,
+    virtio_net_hdr_v1, VIRTIO_F_ANY_LAYOUT, VIRTIO_F_IOMMU_PLATFORM, VIRTIO_F_NOTIFY_ON_EMPTY,
+    VIRTIO_F_VERSION_1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4,
+    VIRTIO_NET_F_GUEST_TSO6, VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4,
+    VIRTIO_NET_F_HOST_TSO6, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MRG_RXBUF,
 };
-use crate::devices::virtio::gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
+use crate::devices::virtio::gen::virtio_rng::VIRTIO_F_ACCESS_PLATFORM;
 use crate::dumbo::pdu::arp::ETH_IPV4_FRAME_LEN;
 use crate::dumbo::pdu::ethernet::{EthernetFrame, PAYLOAD_OFFSET};
 use crate::logger::{IncMetric, METRICS};
@@ -138,7 +144,19 @@ pub struct Net {
     /// Only if MMDS transport has been associated with it.
     pub mmds_ns: Option<MmdsNetworkStack>,
     pub(crate) metrics: Arc<NetDeviceMetrics>,
+
+    /// Vhost back-end
+    vhost_backend: VhostNetBackend,
 }
+
+const TAP_FLAGS: u64 = 1 << VIRTIO_NET_F_GUEST_CSUM
+    | 1 << VIRTIO_NET_F_CSUM
+    | 1 << VIRTIO_NET_F_GUEST_TSO4
+    | 1 << VIRTIO_NET_F_GUEST_TSO6
+    | 1 << VIRTIO_NET_F_GUEST_UFO
+    | 1 << VIRTIO_NET_F_HOST_TSO4
+    | 1 << VIRTIO_NET_F_HOST_TSO6
+    | 1 << VIRTIO_NET_F_HOST_UFO;
 
 impl Net {
     /// Create a new virtio network device with the given TAP interface.
@@ -149,14 +167,8 @@ impl Net {
         rx_rate_limiter: RateLimiter,
         tx_rate_limiter: RateLimiter,
     ) -> Result<Self, NetError> {
-        let mut avail_features = 1 << VIRTIO_NET_F_GUEST_CSUM
-            | 1 << VIRTIO_NET_F_CSUM
-            | 1 << VIRTIO_NET_F_GUEST_TSO4
-            | 1 << VIRTIO_NET_F_GUEST_UFO
-            | 1 << VIRTIO_NET_F_HOST_TSO4
-            | 1 << VIRTIO_NET_F_HOST_UFO
-            | 1 << VIRTIO_F_VERSION_1
-            | 1 << VIRTIO_RING_F_EVENT_IDX;
+        let vhost_backend = VhostNetBackend::new().unwrap();
+        let mut avail_features = TAP_FLAGS | vhost_backend.get_features().unwrap();
 
         let mut config_space = ConfigSpace::default();
         if let Some(mac) = guest_mac {
@@ -193,6 +205,7 @@ impl Net {
             activate_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(NetError::EventFd)?,
             mmds_ns: None,
             metrics: NetMetricsPerDevice::alloc(id),
+            vhost_backend,
         })
     }
 
@@ -207,8 +220,10 @@ impl Net {
         let tap = Tap::open_named(tap_if_name).map_err(NetError::TapOpen)?;
 
         // Set offload flags to match the virtio features below.
+        /*
         tap.set_offload(gen::TUN_F_CSUM | gen::TUN_F_UFO | gen::TUN_F_TSO4 | gen::TUN_F_TSO6)
             .map_err(NetError::TapSetOffload)?;
+        */
 
         let vnet_hdr_size = i32::try_from(vnet_hdr_len()).unwrap();
         tap.set_vnet_hdr_size(vnet_hdr_size)
@@ -844,11 +859,128 @@ impl VirtioDevice for Net {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> Result<(), ActivateError> {
-        let event_idx = self.has_feature(u64::from(VIRTIO_RING_F_EVENT_IDX));
-        if event_idx {
-            for queue in &mut self.queues {
-                queue.enable_notif_suppression();
-            }
+        debug!("net: setting up vhost-net");
+        self.vhost_backend.set_owner().unwrap();
+
+        let mut tap_flags = 0;
+        if self.acked_features & (1u64 << VIRTIO_NET_F_GUEST_CSUM) != 0 {
+            debug!("net: Enabling CSUM on tap");
+            tap_flags |= gen::TUN_F_CSUM;
+        }
+        if self.acked_features & (1 << VIRTIO_NET_F_GUEST_UFO) != 0 {
+            debug!("net: Enabling UFO on tap");
+            tap_flags |= gen::TUN_F_UFO;
+        }
+        if self.acked_features & (1 << VIRTIO_NET_F_GUEST_TSO4) != 0 {
+            debug!("net: Enabling TSO4 on tap");
+            tap_flags |= gen::TUN_F_TSO4;
+        }
+        if self.acked_features & (1 << VIRTIO_NET_F_GUEST_TSO6) != 0 {
+            debug!("net: Enabling TSO6 on tap");
+            tap_flags |= gen::TUN_F_TSO6;
+        }
+        self.tap.set_offload(tap_flags).unwrap();
+
+        debug!(
+            "net: setting vhost features: {:#08x}",
+            self.acked_features & !TAP_FLAGS
+        );
+
+        if self.acked_features & (1 << VIRTIO_NET_F_MRG_RXBUF) != 0 {
+            debug!("net: Enabling VIRTIO_NET_F_MRG_RXBUF");
+        }
+        if self.acked_features & (1 << VHOST_NET_F_VIRTIO_NET_HDR) != 0 {
+            debug!("net: Enabling VHOST_NET_F_VIRTIO_NET_HDR");
+        }
+        if self.acked_features & (1 << VIRTIO_F_ACCESS_PLATFORM) != 0 {
+            debug!("net: Enabling VIRTIO_F_ACCESS_PLATFORM");
+        }
+        if self.acked_features & (1 << VIRTIO_F_NOTIFY_ON_EMPTY) != 0 {
+            debug!("net: Enabling VIRTIO_F_NOTIFY_ON_EMPTY");
+        }
+        if self.acked_features & (1 << 28) != 0 {
+            debug!("net: Enabling VIRTIO_RING_F_INDIRECT_DESC");
+        }
+        if self.acked_features & (1 << 29) != 0 {
+            debug!("net: Enabling VIRTIO_RING_F_EVENT_IDX");
+        }
+        if self.acked_features & (1 << VHOST_F_LOG_ALL) != 0 {
+            debug!("net: Enabling VHOST_F_LOG_ALL");
+        }
+        if self.acked_features & (1 << VIRTIO_F_ANY_LAYOUT) != 0 {
+            debug!("net: Enabling VIRTIO_F_ANY_LAYOUT");
+        }
+        if self.acked_features & (1 << VIRTIO_F_VERSION_1) != 0 {
+            debug!("net: Enabling VIRTIO_F_VERSION_1");
+        }
+
+        self.vhost_backend
+            .set_features(
+                self.vhost_backend.get_features().unwrap()
+                    & !(1u64 << VIRTIO_F_IOMMU_PLATFORM)
+                    & self.acked_features,
+            )
+            .unwrap();
+
+        let vhost_regions: Vec<VhostUserMemoryRegionInfo> = mem
+            .iter()
+            .map(|region| {
+                let (mmap_handle, mmap_offset) = match region.file_offset() {
+                    Some(file_offset) => (file_offset.file().as_raw_fd(), file_offset.start()),
+                    None => (-1, 0),
+                };
+
+                VhostUserMemoryRegionInfo {
+                    guest_phys_addr: region.start_addr().raw_value(),
+                    memory_size: region.len(),
+                    userspace_addr: region.as_ptr() as u64,
+                    mmap_offset,
+                    mmap_handle,
+                }
+            })
+            .collect();
+
+        self.vhost_backend
+            .set_mem_table(vhost_regions.as_slice())
+            .unwrap();
+
+        for (id, queue) in self.queues.iter().enumerate() {
+            self.vhost_backend
+                .set_vring_num(id, queue.actual_size())
+                .unwrap();
+        }
+
+        for (id, queue) in self.queues.iter().enumerate() {
+            debug!("net: setting queue {id} for vhost-net");
+            let queue_evt = &self.queue_evts[id];
+
+            let config_data = VringConfigData {
+                queue_max_size: queue.get_max_size(),
+                queue_size: queue.actual_size(),
+                flags: 0u32,
+                desc_table_addr: queue.desc_table.raw_value(),
+                used_ring_addr: queue.used_ring.raw_value(),
+                avail_ring_addr: queue.avail_ring.raw_value(),
+                log_addr: None,
+            };
+
+            self.vhost_backend
+                .set_vring_addr(&&mem, id, &config_data)
+                .unwrap();
+            self.vhost_backend
+                .set_vring_base(id, queue.avail_idx(&mem).0)
+                .unwrap();
+            self.vhost_backend
+                .set_vring_call(id, &self.irq_trigger.irq_evt)
+                .unwrap();
+            self.vhost_backend.set_vring_kick(id, queue_evt).unwrap();
+        }
+
+        for qid in 0..2 {
+            debug!("net: Enabling device queue {qid}");
+            self.vhost_backend
+                .set_backend(qid, Some(self.tap.inner()))
+                .unwrap();
         }
 
         if self.activate_evt.write(1).is_err() {
@@ -877,6 +1009,7 @@ pub mod tests {
 
     use super::*;
     use crate::check_metric_after_block;
+    use crate::devices::virtio::gen::virtio_net::VIRTIO_F_VERSION_1;
     use crate::devices::virtio::gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
     use crate::devices::virtio::iovec::IoVecBuffer;
     use crate::devices::virtio::net::device::{

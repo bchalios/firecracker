@@ -7,31 +7,10 @@ use event_manager::{EventOps, Events, MutEventSubscriber};
 use utils::epoll::EventSet;
 
 use crate::devices::virtio::net::device::Net;
-use crate::devices::virtio::{VirtioDevice, RX_INDEX, TX_INDEX};
+use crate::devices::virtio::VirtioDevice;
 use crate::logger::{debug, error, warn, IncMetric};
 
 impl Net {
-    fn register_runtime_events(&self, ops: &mut EventOps) {
-        if let Err(err) = ops.add(Events::new(&self.queue_evts[RX_INDEX], EventSet::IN)) {
-            error!("Failed to register rx queue event: {}", err);
-        }
-        if let Err(err) = ops.add(Events::new(&self.queue_evts[TX_INDEX], EventSet::IN)) {
-            error!("Failed to register tx queue event: {}", err);
-        }
-        if let Err(err) = ops.add(Events::new(&self.rx_rate_limiter, EventSet::IN)) {
-            error!("Failed to register rx queue event: {}", err);
-        }
-        if let Err(err) = ops.add(Events::new(&self.tx_rate_limiter, EventSet::IN)) {
-            error!("Failed to register tx queue event: {}", err);
-        }
-        if let Err(err) = ops.add(Events::new(
-            &self.tap,
-            EventSet::IN | EventSet::EDGE_TRIGGERED,
-        )) {
-            error!("Failed to register tap event: {}", err);
-        }
-    }
-
     fn register_activate_event(&self, ops: &mut EventOps) {
         if let Err(err) = ops.add(Events::new(&self.activate_evt, EventSet::IN)) {
             error!("Failed to register activate event: {}", err);
@@ -43,7 +22,6 @@ impl Net {
         if let Err(err) = self.activate_evt.read() {
             error!("Failed to consume net activate event: {:?}", err);
         }
-        self.register_runtime_events(ops);
         if let Err(err) = ops.remove(Events::new(&self.activate_evt, EventSet::IN)) {
             error!("Failed to un-register activate event: {}", err);
         }
@@ -67,20 +45,10 @@ impl MutEventSubscriber for Net {
         }
 
         if self.is_activated() {
-            let virtq_rx_ev_fd = self.queue_evts[RX_INDEX].as_raw_fd();
-            let virtq_tx_ev_fd = self.queue_evts[TX_INDEX].as_raw_fd();
-            let rx_rate_limiter_fd = self.rx_rate_limiter.as_raw_fd();
-            let tx_rate_limiter_fd = self.tx_rate_limiter.as_raw_fd();
-            let tap_fd = self.tap.as_raw_fd();
             let activate_fd = self.activate_evt.as_raw_fd();
 
             // Looks better than C style if/else if/else.
             match source {
-                _ if source == virtq_rx_ev_fd => self.process_rx_queue_event(),
-                _ if source == tap_fd => self.process_tap_rx_event(),
-                _ if source == virtq_tx_ev_fd => self.process_tx_queue_event(),
-                _ if source == rx_rate_limiter_fd => self.process_rx_rate_limiter_event(),
-                _ if source == tx_rate_limiter_fd => self.process_tx_rate_limiter_event(),
                 _ if activate_fd == source => self.process_activate_event(ops),
                 _ => {
                     warn!("Net: Spurious event received: {:?}", source);
@@ -101,7 +69,7 @@ impl MutEventSubscriber for Net {
         //  - on device activation (is-activated already true at this point),
         //  - on device restore from snapshot.
         if self.is_activated() {
-            self.register_runtime_events(ops);
+            error!("net: this is a vhost backed net device. Shouldn't get this event!");
         } else {
             self.register_activate_event(ops);
         }

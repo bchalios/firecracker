@@ -198,6 +198,10 @@ impl Tap {
         }
         Ok(usize::try_from(ret).unwrap())
     }
+
+    pub fn inner(&self) -> &File {
+        &self.tap_file
+    }
 }
 
 impl Read for Tap {

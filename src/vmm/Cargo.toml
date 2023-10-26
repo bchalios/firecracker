@@ -36,6 +36,7 @@ aes-gcm =  { version = "0.10.1", default-features = false, features = ["aes"] }
 base64 = "0.13.0"
 bincode = "1.2.1"
 micro_http = { git = "https://github.com/firecracker-microvm/micro-http" }
+vhost = { git = "https://github.com/bchalios/vhost.git", branch = "fix_vhost_kern", features = ["vhost-net"] }
 
 seccompiler = { path = "../seccompiler" }
 snapshot = { path = "../snapshot"}

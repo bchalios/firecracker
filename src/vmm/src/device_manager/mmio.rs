@@ -407,15 +407,17 @@ impl MMIODeviceManager {
                         }
                     }
                     TYPE_NET => {
-                        let net = virtio.as_mut_any().downcast_mut::<Net>().unwrap();
-                        // If device is activated, kick the net queue(s) to make up for any
-                        // pending or in-flight epoll events we may have not captured in snapshot.
-                        // No need to kick Ratelimiters because they are restored 'unblocked' so
-                        // any inflight `timer_fd` events can be safely discarded.
-                        if net.is_activated() {
-                            info!("kick net {}.", id);
-                            net.process_virtio_queues();
-                        }
+                        /*
+                            let net = virtio.as_mut_any().downcast_mut::<Net>().unwrap();
+                            // If device is activated, kick the net queue(s) to make up for any
+                            // pending or in-flight epoll events we may have not captured in snapshot.
+                            // No need to kick Ratelimiters because they are restored 'unblocked' so
+                            // any inflight `timer_fd` events can be safely discarded.
+                            if net.is_activated() {
+                                info!("kick net {}.", id);
+                                net.process_virtio_queues();
+                            }
+                        */
                     }
                     TYPE_VSOCK => {
                         // Vsock has complicated protocol that isn't resilient to any packet loss,

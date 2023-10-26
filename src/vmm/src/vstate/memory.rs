@@ -15,8 +15,8 @@ pub use vm_memory::bitmap::{AtomicBitmap, Bitmap, BitmapSlice, BS};
 pub use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::mmap::{MmapRegionError, NewBitmap};
 pub use vm_memory::{
-    address, Address, ByteValued, Bytes, FileOffset, GuestAddress, GuestMemory, GuestMemoryRegion,
-    GuestUsize, MemoryRegionAddress, MmapRegion,
+    address, Address, ByteValued, Bytes, FileOffset, GuestAddress, GuestAddressSpace, GuestMemory,
+    GuestMemoryRegion, GuestUsize, MemoryRegionAddress, MmapRegion,
 };
 use vm_memory::{Error as VmMemoryError, GuestMemoryError, WriteVolatile};
 

@@ -55,4 +55,6 @@ pub enum NetError {
     IO(io::Error),
     /// The VNET header is missing from the frame
     VnetHeaderMissing,
+    /// vhost=net error: {0}
+    VhostError(vhost::Error),
 }

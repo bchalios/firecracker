@@ -237,7 +237,12 @@ impl MmioTransport {
                     }
                     0x34 => self.with_queue(0, |q| u32::from(q.get_max_size())),
                     0x44 => self.with_queue(0, |q| u32::from(q.ready)),
-                    0x60 => self.interrupt_status.load(Ordering::SeqCst),
+                    0x60 => {
+                        // Just a hack. With MMIO, the guests asks us for the interrupt status,
+                        // however we don't own that any more, so just lie to them that everything
+                        // is always fine.
+                        1
+                    }
                     0x70 => self.device_status,
                     0xfc => self.config_generation,
                     _ => {
