@@ -501,6 +501,7 @@ class Microvm:
             # Checking the timings requires DEBUG level log messages
             self.time_api_requests = False
 
+        self.jailer.extra_args.update( {"no-seccomp": None})
         # When the daemonize flag is on, we want to clone-exec into the
         # jailer rather than executing it via spawning a shell.
         if self.jailer.daemonize:
