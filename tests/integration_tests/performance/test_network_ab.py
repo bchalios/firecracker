@@ -50,6 +50,10 @@ def network_microvm(request, microvm_factory, guest_kernel, rootfs):
     """Creates a microvm with the networking setup used by the performance tests in this file.
 
     This fixture receives its vcpu count via indirect parameterization"""
+
+    if "vmlinux-4.14" in str(guest_kernel):
+        pytest.skip("vhost-net doesn't run with 4.14 guest kernel")
+
     vm = microvm_factory.build(guest_kernel, rootfs, monitor_memory=False)
     vm.spawn(log_level="Info")
     vm.basic_config(vcpu_count=request.param, mem_size_mib=GUEST_MEM_MIB)
