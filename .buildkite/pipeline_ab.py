@@ -65,7 +65,6 @@ parser = COMMON_PARSER
 parser.add_argument(
     "--test",
     choices=list(perf_test.keys()),
-    default=list(perf_test.keys()),
     help="performance test",
     action="append",
 )
