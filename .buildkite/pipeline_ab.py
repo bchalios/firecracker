@@ -17,31 +17,31 @@ from common import (
 perf_test = {
     "block": {
         "label": "🖴 Block Performance",
-        "parallelism": "50",
+        "parallelism": "10",
         "test_path": "integration_tests/performance/test_block_ab.py",
         "devtool_opts": "-c 1-10 -m 0",
     },
     "network-latency": {
         "label": "🖧 Network Latency",
-        "parallelism": "50",
+        "parallelism": "10",
         "test_path": "integration_tests/performance/test_network_ab.py::test_network_latency",
         "devtool_opts": "-c 1-10 -m 0",
     },
     "network-throughput": {
         "label": "🖧 Network TCP Throughput",
-        "parallelism": "50",
+        "parallelism": "10",
         "test_path": "integration_tests/performance/test_network_ab.py::test_network_tcp_throughput",
         "devtool_opts": "-c 1-10 -m 0",
     },
     "snapshot-latency": {
         "label": "📸 Snapshot Latency",
-        "parallelism": "50",
+        "parallelism": "10",
         "test_path": "integration_tests/performance/test_snapshot_ab.py",
         "devtool_opts": "-c 1-12 -m 0",
     },
     "vsock-throughput": {
         "label": "🧦 Vsock Throughput",
-        "parallelism": "50",
+        "parallelism": "10",
         "test_path": "integration_tests/performance/test_vsock_ab.py",
         "devtool_opts": "-c 1-10 -m 0",
     },
