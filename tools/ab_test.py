@@ -392,6 +392,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    utils.run_cmd("pip install awscli")
+
     if args.command == "run":
         ab_performance_test(
             # These will show up in Cloudwatch, so canonicalize to long commit SHAs

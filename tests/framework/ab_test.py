@@ -182,6 +182,12 @@ def git_ab_test_with_binaries(
         revision_store = FC_WORKSPACE_DIR / "build" / revision
         if not revision_store.exists():
             with chdir(checkout):
+                utils.run_cmd("rm -rf build/img")
+                utils.run_cmd("rm -rf /srv/img")
+                rc, stdout, stderr = utils.run_cmd("tools/devtool fetch_ci_artifacts")
+                assert rc == 0, stderr
+                print(stdout)
+                utils.run_cmd("cp -r build/img /srv/img")
                 firecracker, jailer = get_firecracker_binaries(workspace_dir=checkout)
 
             revision_store.mkdir(parents=True, exist_ok=True)
