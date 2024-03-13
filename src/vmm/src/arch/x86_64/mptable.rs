@@ -8,11 +8,15 @@
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::mem;
+use std::rc::Rc;
 
 use libc::c_char;
+use log::debug;
+use vm_allocator::AllocPolicy;
 
 use crate::arch::IRQ_MAX;
 use crate::arch_gen::x86::mpspec;
+use crate::device_manager::resources::ResourceAllocator;
 use crate::vstate::memory::{
     Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap,
 };
@@ -32,9 +36,6 @@ unsafe impl ByteValued for mpspec::mpc_table {}
 unsafe impl ByteValued for mpspec::mpc_lintsrc {}
 // SAFETY: POD
 unsafe impl ByteValued for mpspec::mpf_intel {}
-
-// MPTABLE, describing VCPUS.
-const MPTABLE_START: u64 = 0x9fc00;
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error, displaydoc::Display)]
 pub enum MptableError {
@@ -62,6 +63,8 @@ pub enum MptableError {
     WriteMpcLintsrc,
     /// Failure to write MP table header.
     WriteMpcTable,
+    /// Failure to allocate memory for MPTable
+    MemoryAllocation(#[from] vm_allocator::Error),
 }
 
 // With APIC/xAPIC, there are only 255 APIC IDs available. And IOAPIC occupies
@@ -112,15 +115,25 @@ fn compute_mp_size(num_cpus: u8) -> usize {
 }
 
 /// Performs setup of the MP table for the given `num_cpus`.
-pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<(), MptableError> {
+pub fn setup_mptable(
+    mem: &GuestMemoryMmap,
+    resource_allocator: Rc<ResourceAllocator>,
+    num_cpus: u8,
+) -> Result<(), MptableError> {
     if num_cpus > MAX_SUPPORTED_CPUS {
         return Err(MptableError::TooManyCpus);
     }
 
-    // Used to keep track of the next base pointer into the MP table.
-    let mut base_mp = GuestAddress(MPTABLE_START);
-
     let mp_size = compute_mp_size(num_cpus);
+    let mp_addr =
+        resource_allocator.allocate_acpi_memory(mp_size as u64, 1, AllocPolicy::FirstMatch)?;
+    debug!(
+        "mptable: allocated {mp_size} bytes for MPTable at address {:#010x}",
+        mp_addr
+    );
+
+    // Used to keep track of the next base pointer into the MP table.
+    let mut base_mp = GuestAddress(mp_addr);
     let mut mp_num_entries: u16 = 0;
 
     let mut checksum: u8 = 0;
@@ -299,6 +312,7 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<(), MptableE
 mod tests {
 
     use super::*;
+    use crate::arch::ACPI_MEM_START;
     use crate::utilities::test_utils::single_region_mem_at;
     use crate::vstate::memory::Bytes;
 
@@ -316,27 +330,30 @@ mod tests {
     #[test]
     fn bounds_check() {
         let num_cpus = 4;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(num_cpus));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(num_cpus));
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        setup_mptable(&mem, num_cpus).unwrap();
+        setup_mptable(&mem, resource_allocator, num_cpus).unwrap();
     }
 
     #[test]
     fn bounds_check_fails() {
         let num_cpus = 4;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(num_cpus) - 1);
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(num_cpus) - 1);
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        setup_mptable(&mem, num_cpus).unwrap_err();
+        setup_mptable(&mem, resource_allocator, num_cpus).unwrap_err();
     }
 
     #[test]
     fn mpf_intel_checksum() {
         let num_cpus = 1;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(num_cpus));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(num_cpus));
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        setup_mptable(&mem, num_cpus).unwrap();
+        setup_mptable(&mem, resource_allocator, num_cpus).unwrap();
 
-        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(MPTABLE_START)).unwrap();
+        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(ACPI_MEM_START)).unwrap();
 
         assert_eq!(mpf_intel_compute_checksum(&mpf_intel), mpf_intel.checksum);
     }
@@ -344,11 +361,12 @@ mod tests {
     #[test]
     fn mpc_table_checksum() {
         let num_cpus = 4;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(num_cpus));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(num_cpus));
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        setup_mptable(&mem, num_cpus).unwrap();
+        setup_mptable(&mem, resource_allocator, num_cpus).unwrap();
 
-        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(MPTABLE_START)).unwrap();
+        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(ACPI_MEM_START)).unwrap();
         let mpc_offset = GuestAddress(u64::from(mpf_intel.physptr));
         let mpc_table: mpspec::mpc_table = mem.read_obj(mpc_offset).unwrap();
 
@@ -366,11 +384,12 @@ mod tests {
     #[test]
     fn mpc_entry_count() {
         let num_cpus = 1;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(num_cpus));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(num_cpus));
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        setup_mptable(&mem, num_cpus).unwrap();
+        setup_mptable(&mem, resource_allocator, num_cpus).unwrap();
 
-        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(MPTABLE_START)).unwrap();
+        let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(ACPI_MEM_START)).unwrap();
         let mpc_offset = GuestAddress(u64::from(mpf_intel.physptr));
         let mpc_table: mpspec::mpc_table = mem.read_obj(mpc_offset).unwrap();
 
@@ -394,12 +413,13 @@ mod tests {
 
     #[test]
     fn cpu_entry_count() {
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(MAX_SUPPORTED_CPUS));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(MAX_SUPPORTED_CPUS));
 
         for i in 0..MAX_SUPPORTED_CPUS {
-            setup_mptable(&mem, i).unwrap();
+            let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
+            setup_mptable(&mem, resource_allocator, i).unwrap();
 
-            let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(MPTABLE_START)).unwrap();
+            let mpf_intel: mpspec::mpf_intel = mem.read_obj(GuestAddress(ACPI_MEM_START)).unwrap();
             let mpc_offset = GuestAddress(u64::from(mpf_intel.physptr));
             let mpc_table: mpspec::mpc_table = mem.read_obj(mpc_offset).unwrap();
             let mpc_end = mpc_offset.checked_add(u64::from(mpc_table.length)).unwrap();
@@ -425,9 +445,10 @@ mod tests {
     #[test]
     fn cpu_entry_count_max() {
         let cpus = MAX_SUPPORTED_CPUS + 1;
-        let mem = single_region_mem_at(MPTABLE_START, compute_mp_size(cpus));
+        let mem = single_region_mem_at(ACPI_MEM_START, compute_mp_size(cpus));
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
 
-        let result = setup_mptable(&mem, cpus).unwrap_err();
+        let result = setup_mptable(&mem, resource_allocator, cpus).unwrap_err();
         assert_eq!(result, MptableError::TooManyCpus);
     }
 }

@@ -45,7 +45,7 @@ pub const EBDA_SIZE: u64 = 1 << 10;
 
 /// Start of memory region we will use for ACPI data. We are putting them
 /// just after the EBDA region
-pub const ACPI_MEM_START: u64 = EBDA_START + EBDA_SIZE;
+pub const ACPI_MEM_START: u64 = EBDA_START;
 
 /// Size of memory region for ACPI data.
 ///

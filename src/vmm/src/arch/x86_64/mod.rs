@@ -18,12 +18,15 @@ pub mod msr;
 /// Logic for configuring x86_64 registers.
 pub mod regs;
 
+use std::rc::Rc;
+
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
 use linux_loader::loader::bootparam::boot_params;
 use utils::u64_to_usize;
 
 use crate::arch::InitrdConfig;
+use crate::device_manager::resources::ResourceAllocator;
 use crate::vstate::memory::{
     Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion,
 };
@@ -108,6 +111,7 @@ pub fn initrd_load_addr(
 /// * `num_cpus` - Number of virtual CPUs the guest will have.
 pub fn configure_system(
     guest_mem: &GuestMemoryMmap,
+    resource_allocator: Rc<ResourceAllocator>,
     cmdline_addr: GuestAddress,
     cmdline_size: usize,
     initrd: &Option<InitrdConfig>,
@@ -123,7 +127,7 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    mptable::setup_mptable(guest_mem, num_cpus)?;
+    mptable::setup_mptable(guest_mem, resource_allocator, num_cpus)?;
 
     // Set the location of RSDP in Boot Parameters to help the guest kernel find it faster.
     let mut params = boot_params {
@@ -245,7 +249,8 @@ mod tests {
     fn test_system_configuration() {
         let no_vcpus = 4;
         let gm = single_region_mem(0x10000);
-        let config_err = configure_system(&gm, GuestAddress(0), 0, &None, 1);
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
+        let config_err = configure_system(&gm, resource_allocator, GuestAddress(0), 0, &None, 1);
         assert_eq!(
             config_err.unwrap_err(),
             super::ConfigurationError::MpTableSetup(mptable::MptableError::NotEnoughMemory)
@@ -254,17 +259,20 @@ mod tests {
         // Now assigning some memory that falls before the 32bit memory hole.
         let mem_size = 128 << 20;
         let gm = arch_mem(mem_size);
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
+        configure_system(&gm, resource_allocator, GuestAddress(0), 0, &None, no_vcpus).unwrap();
 
         // Now assigning some memory that is equal to the start of the 32bit memory hole.
         let mem_size = 3328 << 20;
         let gm = arch_mem(mem_size);
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
+        configure_system(&gm, resource_allocator, GuestAddress(0), 0, &None, no_vcpus).unwrap();
 
         // Now assigning some memory that falls after the 32bit memory hole.
         let mem_size = 3330 << 20;
         let gm = arch_mem(mem_size);
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        let resource_allocator = Rc::new(ResourceAllocator::new().unwrap());
+        configure_system(&gm, resource_allocator, GuestAddress(0), 0, &None, no_vcpus).unwrap();
     }
 
     #[test]
