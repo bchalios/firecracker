@@ -196,6 +196,24 @@ impl MMIODeviceManager {
         )
     }
 
+    /// Append a registered virtio-over MMIO device to the kernel cmdline.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_virtio_device_to_cmdline(
+        cmdline: &mut kernel_cmdline::Cmdline,
+        device_info: &MMIODeviceInfo,
+    ) -> Result<(), MmioError> {
+        use vm_memory::GuestAddress;
+
+        cmdline
+            .add_virtio_mmio_device(
+                device_info.len,
+                GuestAddress(device_info.addr),
+                device_info.irqs[0],
+                None,
+            )
+            .map_err(MmioError::Cmdline)
+    }
+
     /// Allocate slot and register an already created virtio-over-MMIO device. Also Adds the device
     /// to the boot cmdline.
     pub fn register_mmio_virtio_for_boot(
@@ -203,10 +221,12 @@ impl MMIODeviceManager {
         vm: &VmFd,
         device_id: String,
         mmio_device: MmioTransport,
-        _cmdline: &mut kernel_cmdline::Cmdline,
+        cmdline: &mut kernel_cmdline::Cmdline,
     ) -> Result<MMIODeviceInfo, MmioError> {
         let device_info = self.allocate_mmio_resources(1)?;
         self.register_mmio_virtio(vm, device_id, mmio_device, &device_info)?;
+        #[cfg(target_arch = "x86_64")]
+        Self::add_virtio_device_to_cmdline(cmdline, &device_info)?;
         device_info.append_aml_bytes(&mut self.dsdt_data);
         Ok(device_info)
     }
