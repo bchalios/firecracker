@@ -28,3 +28,6 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 lto = true
+
+[patch.crates-io]
+kvm-bindings = { git = "https://github.com/roypat/kvm-bindings", branch = "slice-not-vec"}
