@@ -220,11 +220,17 @@ impl IoVecBuffer {
 /// of data from that buffer.
 #[derive(Debug, Default, Clone)]
 pub struct IoVecBufferMut {
+    // Index of the head descriptor we have loaded in this IoVecBufferMut
+    pub desc_index: Option<u16>,
     // container of the memory regions included in this IO vector
     vecs: IoVecVec,
     // Total length of the IoVecBufferMut
     len: u32,
 }
+
+// SAFETY: `IoVecBuffer` doesn't allow for interior mutability and no shared ownership is possible
+// as it doesn't implement clone
+unsafe impl Send for IoVecBufferMut {}
 
 impl IoVecBufferMut {
     /// Create an `IoVecBuffer` from a `DescriptorChain`
@@ -237,6 +243,7 @@ impl IoVecBufferMut {
         mut desc: DescriptorChain,
     ) -> Result<(), IoVecError> {
         self.clear();
+        self.desc_index = Some(desc.index);
 
         loop {
             if !desc.is_write_only() {
@@ -293,6 +300,7 @@ impl IoVecBufferMut {
     pub fn clear(&mut self) {
         self.vecs.clear();
         self.len = 0u32;
+        self.desc_index = None;
     }
 
     /// Writes a number of bytes into the `IoVecBufferMut` starting at a given offset.
