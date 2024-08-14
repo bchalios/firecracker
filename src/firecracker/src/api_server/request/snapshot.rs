@@ -105,6 +105,7 @@ fn parse_put_snapshot_load(body: &Body) -> Result<ParsedRequest, RequestError> {
         mem_backend,
         enable_diff_snapshots: snapshot_config.enable_diff_snapshots,
         resume_vm: snapshot_config.resume_vm,
+        network_overrides: snapshot_config.network_overrides,
     };
 
     // Construct the `ParsedRequest` object.
@@ -183,12 +184,10 @@ mod tests {
             resume_vm: false,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
-        assert!(
-            parsed_request
-                .parsing_info()
-                .take_deprecation_message()
-                .is_none()
-        );
+        assert!(parsed_request
+            .parsing_info()
+            .take_deprecation_message()
+            .is_none());
         assert_eq!(
             vmm_action_from_request(parsed_request),
             VmmAction::LoadSnapshot(expected_config)
@@ -212,12 +211,10 @@ mod tests {
             resume_vm: false,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
-        assert!(
-            parsed_request
-                .parsing_info()
-                .take_deprecation_message()
-                .is_none()
-        );
+        assert!(parsed_request
+            .parsing_info()
+            .take_deprecation_message()
+            .is_none());
         assert_eq!(
             vmm_action_from_request(parsed_request),
             VmmAction::LoadSnapshot(expected_config)
@@ -241,12 +238,10 @@ mod tests {
             resume_vm: true,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
-        assert!(
-            parsed_request
-                .parsing_info()
-                .take_deprecation_message()
-                .is_none()
-        );
+        assert!(parsed_request
+            .parsing_info()
+            .take_deprecation_message()
+            .is_none());
         assert_eq!(
             vmm_action_from_request(parsed_request),
             VmmAction::LoadSnapshot(expected_config)
@@ -354,20 +349,16 @@ mod tests {
         let body = r#"{
             "state": "Paused"
         }"#;
-        assert!(
-            parse_patch_vm_state(&Body::new(body))
-                .unwrap()
-                .eq(&ParsedRequest::new_sync(VmmAction::Pause))
-        );
+        assert!(parse_patch_vm_state(&Body::new(body))
+            .unwrap()
+            .eq(&ParsedRequest::new_sync(VmmAction::Pause)));
 
         let body = r#"{
             "state": "Resumed"
         }"#;
-        assert!(
-            parse_patch_vm_state(&Body::new(body))
-                .unwrap()
-                .eq(&ParsedRequest::new_sync(VmmAction::Resume))
-        );
+        assert!(parse_patch_vm_state(&Body::new(body))
+            .unwrap()
+            .eq(&ParsedRequest::new_sync(VmmAction::Resume)));
 
         let invalid_body = r#"{
             "invalid": "Paused"
