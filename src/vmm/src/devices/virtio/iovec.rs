@@ -296,6 +296,16 @@ impl IoVecBufferMut {
         self.len
     }
 
+    /// Returns a pointer to the memory keeping the `iovec` structs
+    pub fn as_iovec_mut_ptr(&mut self) -> *mut iovec {
+        self.vecs.as_mut_ptr()
+    }
+
+    /// Returns the length of the `iovec` array.
+    pub fn iovec_count(&self) -> usize {
+        self.vecs.len()
+    }
+
     /// Clears the `iovec` array
     pub fn clear(&mut self) {
         self.vecs.clear();
