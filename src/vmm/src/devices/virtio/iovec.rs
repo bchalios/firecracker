@@ -57,12 +57,11 @@ impl IoVecBuffer {
     /// The descriptor chain cannot be referencing the same memory location as another chain
     pub unsafe fn load_descriptor_chain(
         &mut self,
-        head: DescriptorChain,
+        mut desc: DescriptorChain,
     ) -> Result<(), IoVecError> {
         self.clear();
 
-        let mut next_descriptor = Some(head);
-        while let Some(desc) = next_descriptor {
+        loop {
             if desc.is_write_only() {
                 return Err(IoVecError::WriteOnlyDescriptor);
             }
@@ -85,7 +84,9 @@ impl IoVecBuffer {
                 .checked_add(desc.len)
                 .ok_or(IoVecError::OverflowedDescriptor)?;
 
-            next_descriptor = desc.next_descriptor();
+            if !desc.load_next_descriptor() {
+                break;
+            }
         }
 
         Ok(())
@@ -233,12 +234,11 @@ impl IoVecBufferMut {
     /// The descriptor chain cannot be referencing the same memory location as another chain
     pub unsafe fn load_descriptor_chain(
         &mut self,
-        head: DescriptorChain,
+        mut desc: DescriptorChain,
     ) -> Result<(), IoVecError> {
         self.clear();
 
-        let mut next_descriptor = Some(head);
-        while let Some(desc) = next_descriptor {
+        loop {
             if !desc.is_write_only() {
                 return Err(IoVecError::ReadOnlyDescriptor);
             }
@@ -263,7 +263,9 @@ impl IoVecBufferMut {
                 .checked_add(desc.len)
                 .ok_or(IoVecError::OverflowedDescriptor)?;
 
-            next_descriptor = desc.next_descriptor();
+            if !desc.load_next_descriptor() {
+                break;
+            }
         }
 
         Ok(())

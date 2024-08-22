@@ -10,6 +10,7 @@ use std::num::Wrapping;
 use std::sync::atomic::{fence, Ordering};
 
 use utils::usize_to_u64;
+use vm_memory::GuestMemoryRegion;
 
 use crate::logger::error;
 use crate::vstate::memory::{
@@ -68,6 +69,28 @@ struct UsedElement {
 // SAFETY: `UsedElement` is a POD and contains no padding.
 unsafe impl ByteValued for UsedElement {}
 
+trait MemBytesExt: GuestMemory {
+    /// Load an object `T` from GPA.
+    ///
+    /// Usually used for very small items.
+    #[inline(always)]
+    fn load_obj<T: ByteValued>(
+        &self,
+        addr: GuestAddress,
+    ) -> Result<T, <Self as Bytes<GuestAddress>>::E> {
+        if let Ok(s) = self.get_slice(addr, std::mem::size_of::<T>()) {
+            let ptr = s.ptr_guard().as_ptr().cast::<T>();
+            //if ptr.is_aligned_to() {
+            // SAFETY: We just checked that the slice is of the correct size and require it
+            // implements ByteValued, also, the pointer is aligned.
+            return Ok(unsafe { ptr.read_volatile() });
+            //}
+        }
+        self.read_obj::<T>(addr)
+    }
+}
+impl<T: GuestMemory> MemBytesExt for T {}
+
 /// A virtio descriptor chain.
 #[derive(Debug)]
 pub struct DescriptorChain<'a, M: GuestMemory = GuestMemoryMmap> {
@@ -114,7 +137,7 @@ impl<'a, M: GuestMemory> DescriptorChain<'a, M> {
         let desc_head = desc_table.unchecked_add(u64::from(index) * 16);
 
         // These reads can't fail unless Guest memory is hopelessly broken.
-        let desc = match mem.read_obj::<Descriptor>(desc_head) {
+        let desc = match mem.load_obj::<Descriptor>(desc_head) {
             Ok(ret) => ret,
             Err(err) => {
                 error!(
@@ -141,6 +164,40 @@ impl<'a, M: GuestMemory> DescriptorChain<'a, M> {
         } else {
             None
         }
+    }
+
+    /// Load a new `Descriptor` from the guest in this `DescriptorChain`
+    ///
+    /// Checks if there is a next `Descriptor` in the chain and loads it. If there isn't a valid
+    /// "next" this will return false, otherwise true
+    pub fn load_next_descriptor(&mut self) -> bool {
+        if !self.has_next() {
+            return false;
+        }
+        if self.next >= self.queue_size {
+            return false;
+        }
+
+        let desc_head = self.desc_table.unchecked_add(u64::from(self.next) * 16);
+        let desc = match self.mem.load_obj::<Descriptor>(desc_head) {
+            Ok(ret) => ret,
+            Err(err) => {
+                error!(
+                    "Failed to read virtio descriptor from memory at address {:#x}: {}",
+                    desc_head.0, err
+                );
+                return false;
+            }
+        };
+
+        self.index = self.next;
+        self.addr = GuestAddress(desc.addr);
+        self.len = desc.len;
+        self.flags = desc.flags;
+        self.next = desc.next;
+        self.ttl -= 1;
+
+        self.is_valid()
     }
 
     fn is_valid(&self) -> bool {
@@ -427,7 +484,7 @@ impl Queue {
         // and virtq rings, so it's safe to unwrap guest memory reads and to use unchecked
         // offsets.
         let desc_index: u16 = mem
-            .read_obj(self.avail_ring.unchecked_add(u64::from(index_offset)))
+            .load_obj(self.avail_ring.unchecked_add(u64::from(index_offset)))
             .unwrap();
 
         DescriptorChain::checked_new(mem, self.desc_table, self.actual_size(), desc_index).map(
@@ -511,7 +568,7 @@ impl Queue {
         // guest       after device activation, so we can be certain that no change has
         // occurred since the last `self.is_valid()` check.
         let addr = self.avail_ring.unchecked_add(2);
-        Wrapping(mem.read_obj::<u16>(addr).unwrap())
+        Wrapping(mem.load_obj::<u16>(addr).unwrap())
     }
 
     /// Get the value of the used event field of the avail ring.
@@ -524,7 +581,7 @@ impl Queue {
             .avail_ring
             .unchecked_add(u64::from(4 + 2 * self.actual_size()));
 
-        Wrapping(mem.read_obj::<u16>(used_event_addr).unwrap())
+        Wrapping(mem.load_obj::<u16>(used_event_addr).unwrap())
     }
 
     /// Helper method that writes to the `avail_event` field of the used ring.
@@ -1131,7 +1188,7 @@ mod verification {
                 .checked_offset(queue.desc_table, (index as usize) * 16)
                 .unwrap();
             mem.checked_offset(desc_head, 16).unwrap();
-            let desc = mem.read_obj::<Descriptor>(desc_head).unwrap();
+            let desc = mem.load_obj::<Descriptor>(desc_head).unwrap();
 
             match maybe_chain {
                 None => {
@@ -1161,7 +1218,7 @@ mod tests {
                 .used_ring
                 .unchecked_add(u64::from(4 + 8 * self.actual_size()));
 
-            mem.read_obj::<u16>(avail_event_addr).unwrap()
+            mem.load_obj::<u16>(avail_event_addr).unwrap()
         }
     }
 
