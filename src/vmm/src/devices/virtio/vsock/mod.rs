@@ -33,6 +33,8 @@ pub use self::unix::{VsockUnixBackend, VsockUnixBackendError};
 use crate::devices::virtio::iovec::IoVecError;
 use crate::devices::virtio::persist::PersistError as VirtioStateError;
 
+use super::iov_deque::IovDequeError;
+
 mod defs {
     use crate::devices::virtio::queue::FIRECRACKER_MAX_QUEUE_SIZE;
 
@@ -138,6 +140,8 @@ pub enum VsockError {
     VirtioState(VirtioStateError),
     /// Vsock uds backend error: {0}
     VsockUdsBackend(VsockUnixBackendError),
+    /// Underlying IovDeque error: {0}
+    IovDeque(IovDequeError),
 }
 
 impl From<IoVecError> for VsockError {
@@ -147,6 +151,7 @@ impl From<IoVecError> for VsockError {
             IoVecError::ReadOnlyDescriptor => VsockError::UnwritableDescriptor,
             IoVecError::GuestMemory(err) => VsockError::GuestMemoryMmap(err),
             IoVecError::OverflowedDescriptor => VsockError::DescChainOverflow,
+            IoVecError::IovDeque(err) => VsockError::IovDeque(err),
         }
     }
 }

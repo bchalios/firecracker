@@ -92,7 +92,7 @@ pub enum VsockPacketBuffer {
     /// Buffer holds a read-only guest-to-host (TX) packet
     Tx(IoVecBuffer),
     /// Buffer holds a write-only host-to-guest (RX) packet
-    Rx(IoVecBufferMut),
+    Rx(IoVecBufferMut<'static>),
 }
 
 /// Struct describing a single vsock packet.

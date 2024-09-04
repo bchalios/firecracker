@@ -30,6 +30,8 @@ pub use tap::{Tap, TapError};
 
 pub use self::device::Net;
 
+use super::iovec::IoVecError;
+
 /// Enum representing the Net device queue types
 #[derive(Debug)]
 pub enum NetQueue {
@@ -52,4 +54,6 @@ pub enum NetError {
     IO(io::Error),
     /// The VNET header is missing from the frame
     VnetHeaderMissing,
+    /// IoVecBuffer(Mut) error: {0}
+    IoVecError(#[from] IoVecError),
 }

@@ -31,7 +31,7 @@ use crate::devices::virtio::net::tap::Tap;
 use crate::devices::virtio::net::{
     gen, NetError, NetQueue, MAX_BUFFER_SIZE, NET_QUEUE_SIZES, RX_INDEX, TX_INDEX,
 };
-use crate::devices::virtio::queue::{DescriptorChain, Queue};
+use crate::devices::virtio::queue::{DescriptorChain, Queue, FIRECRACKER_MAX_QUEUE_SIZE};
 use crate::devices::virtio::{ActivateError, TYPE_NET};
 use crate::devices::{report_net_event_fail, DeviceError};
 use crate::dumbo::pdu::arp::ETH_IPV4_FRAME_LEN;
@@ -104,17 +104,25 @@ pub struct ConfigSpace {
 unsafe impl ByteValued for ConfigSpace {}
 
 /// A map of all the memory the guest has provided us for performing RX
-#[derive(Debug, Default)]
-pub(crate) struct RxBuffers {
+#[derive(Debug)]
+pub(crate) struct RxBuffers<'a> {
     // An IoVecBufferMut covering all the memory we have available for receiving network frames
-    iovec: IoVecBufferMut,
+    iovec: IoVecBufferMut<'a>,
     // A map of which part of the memory belongs to which DescriptorChain object
     descriptor_ranges: VecDeque<(u16, u32)>,
     // Buffers that have been used
     used_descriptors: Vec<(u16, u32)>,
 }
 
-impl RxBuffers {
+impl<'a> RxBuffers<'a> {
+    fn new() -> Result<Self, IoVecError> {
+        Ok(Self {
+            iovec: IoVecBufferMut::new()?,
+            descriptor_ranges: VecDeque::with_capacity(FIRECRACKER_MAX_QUEUE_SIZE as usize),
+            used_descriptors: Vec::with_capacity(FIRECRACKER_MAX_QUEUE_SIZE as usize),
+        })
+    }
+
     unsafe fn add_buffer(
         &mut self,
         mem: &GuestMemoryMmap,
@@ -168,7 +176,7 @@ impl RxBuffers {
 }
 
 // SAFETY: TODO
-unsafe impl Send for RxBuffers {}
+unsafe impl<'a> Send for RxBuffers<'a> {}
 
 /// VirtIO network device.
 ///
@@ -211,7 +219,7 @@ pub struct Net {
     pub(crate) metrics: Arc<NetDeviceMetrics>,
 
     tx_buffer: IoVecBuffer,
-    rx_buffer: RxBuffers,
+    rx_buffer: RxBuffers<'static>,
 }
 
 impl Net {
@@ -270,7 +278,7 @@ impl Net {
             mmds_ns: None,
             metrics: NetMetricsPerDevice::alloc(id),
             tx_buffer: Default::default(),
-            rx_buffer: Default::default(),
+            rx_buffer: RxBuffers::new()?,
         })
     }
 
