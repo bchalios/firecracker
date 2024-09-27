@@ -99,16 +99,16 @@ enum AddRxBufferError {
 
 /// A map of all the memory the guest has provided us with for performing RX
 #[derive(Debug)]
-pub(crate) struct RxBuffers {
+pub struct RxBuffers {
     // minimum size of a usable buffer for doing RX
-    min_buffer_size: u32,
+    pub min_buffer_size: u32,
     // An [`IoVecBufferMut`] covering all the memory we have available for receiving network
     // frames.
-    iovec: IoVecBufferMut,
+    pub iovec: IoVecBufferMut,
     // A map of which part of the memory belongs to which `DescriptorChain` object
-    parsed_descriptors: VecDeque<ParsedDescriptorChain>,
+    pub parsed_descriptors: VecDeque<ParsedDescriptorChain>,
     // Buffers that we have used and they are ready to be given back to the guest.
-    used_descriptor: Option<ParsedDescriptorChain>,
+    pub used_descriptor: Option<ParsedDescriptorChain>,
 }
 
 impl RxBuffers {
@@ -251,7 +251,7 @@ pub struct Net {
     pub(crate) metrics: Arc<NetDeviceMetrics>,
 
     tx_buffer: IoVecBuffer,
-    rx_buffer: RxBuffers,
+    pub(crate) rx_buffer: RxBuffers,
 }
 
 impl Net {
@@ -444,7 +444,7 @@ impl Net {
     }
 
     /// Parse available RX `DescriptorChains` from the queue
-    fn parse_rx_descriptors(&mut self) {
+    pub fn parse_rx_descriptors(&mut self) {
         // This is safe since we checked in the event handler that the device is activated.
         let mem = self.device_state.mem().unwrap();
         let queue = &mut self.queues[RX_INDEX];
