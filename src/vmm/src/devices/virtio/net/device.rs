@@ -579,9 +579,7 @@ impl Net {
 
     /// Read as many frames as possible.
     fn process_rx(&mut self) -> Result<(), DeviceError> {
-        if self.rx_buffer.iovec.len() == 0 {
-            self.parse_rx_descriptors();
-        }
+        self.parse_rx_descriptors();
 
         loop {
             match self.read_from_mmds_or_tap() {
