@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use libc::EAGAIN;
 use log::{error, warn};
+use utils::time::{get_time_us, ClockType};
 use vm_memory::GuestMemoryError;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -34,7 +35,7 @@ use crate::devices::virtio::{ActivateError, TYPE_NET};
 use crate::devices::{report_net_event_fail, DeviceError};
 use crate::dumbo::pdu::arp::ETH_IPV4_FRAME_LEN;
 use crate::dumbo::pdu::ethernet::{EthernetFrame, PAYLOAD_OFFSET};
-use crate::logger::{IncMetric, METRICS};
+use crate::logger::{IncMetric, StoreMetric, METRICS};
 use crate::mmds::data_store::Mmds;
 use crate::mmds::ns::MmdsNetworkStack;
 use crate::rate_limiter::{BucketUpdate, RateLimiter, TokenType};
@@ -526,6 +527,7 @@ impl Net {
 
     fn process_rx(&mut self) -> Result<(), DeviceError> {
         // Read as many frames as possible.
+        let start_time = get_time_us(ClockType::Monotonic);
         loop {
             match self.read_from_mmds_or_tap() {
                 Ok(count) => {
@@ -555,7 +557,19 @@ impl Net {
             }
         }
 
-        self.try_signal_queue(NetQueue::Rx)
+        self.try_signal_queue(NetQueue::Rx)?;
+        let delta_us = get_time_us(ClockType::Monotonic) - start_time;
+        self.metrics.rx_process_agg.sum_us.add(delta_us);
+        let min_us = self.metrics.rx_process_agg.min_us.fetch();
+        let max_us = self.metrics.rx_process_agg.max_us.fetch();
+        if (0 == min_us) || (min_us > delta_us) {
+            self.metrics.rx_process_agg.min_us.store(delta_us);
+        }
+        if (0 == max_us) || (max_us < delta_us) {
+            self.metrics.rx_process_agg.max_us.store(delta_us);
+        }
+
+        Ok(())
     }
 
     // Process the deferred frame first, then continue reading from tap.
@@ -716,6 +730,7 @@ impl Net {
     }
 
     fn read_tap(&mut self) -> std::io::Result<usize> {
+        let _metric = self.metrics.rx_tap_agg.record_latency_metrics();
         self.tap.read(&mut self.rx_frame_buf)
     }
 

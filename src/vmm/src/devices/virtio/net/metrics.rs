@@ -174,6 +174,12 @@ pub struct NetDeviceMetrics {
     pub rx_fails: SharedIncMetric,
     /// Number of successful read operations while receiving data.
     pub rx_count: SharedIncMetric,
+    /// Duration of parsing RX queue buffers.
+    pub rx_parse_agg: LatencyAggregateMetrics,
+    /// Duration of all TAP read operations.
+    pub rx_tap_agg: LatencyAggregateMetrics,
+    /// Duration of all process_rx operations.
+    pub rx_process_agg: LatencyAggregateMetrics,
     /// Number of times reading from TAP failed.
     pub tap_read_fails: SharedIncMetric,
     /// Number of times writing to TAP failed.
@@ -208,6 +214,9 @@ impl NetDeviceMetrics {
     /// Const default construction.
     pub fn new() -> Self {
         Self {
+            rx_parse_agg: LatencyAggregateMetrics::new(),
+            rx_tap_agg: LatencyAggregateMetrics::new(),
+            rx_process_agg: LatencyAggregateMetrics::new(),
             tap_write_agg: LatencyAggregateMetrics::new(),
             ..Default::default()
         }
@@ -243,6 +252,15 @@ impl NetDeviceMetrics {
             .add(other.rx_packets_count.fetch_diff());
         self.rx_fails.add(other.rx_fails.fetch_diff());
         self.rx_count.add(other.rx_count.fetch_diff());
+        self.rx_parse_agg
+            .sum_us
+            .add(other.rx_parse_agg.sum_us.fetch_diff());
+        self.rx_tap_agg
+            .sum_us
+            .add(other.rx_tap_agg.sum_us.fetch_diff());
+        self.rx_process_agg
+            .sum_us
+            .add(other.rx_process_agg.sum_us.fetch_diff());
         self.tap_read_fails.add(other.tap_read_fails.fetch_diff());
         self.tap_write_fails.add(other.tap_write_fails.fetch_diff());
         self.tap_write_agg
