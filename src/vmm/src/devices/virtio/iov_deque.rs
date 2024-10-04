@@ -149,7 +149,7 @@ impl IovDeque {
         unsafe {
             Self::mmap(
                 std::ptr::null_mut(),
-                PAGE_SIZE * 2,
+                PAGE_SIZE * 4,
                 libc::PROT_NONE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
                 -1,
@@ -186,7 +186,7 @@ impl IovDeque {
         //   in `isize`
         // * The resulting pointer is the beginning of the second page of our allocation, so it
         //   doesn't wrap around the address space.
-        let next_page = unsafe { buffer.add(PAGE_SIZE) };
+        let next_page = unsafe { buffer.add(2 * PAGE_SIZE) };
 
         // SAFETY: We are calling the system call with valid arguments
         let _ = unsafe {
@@ -216,7 +216,7 @@ impl IovDeque {
     /// Returns `true` if the [`IovDeque`] is full, `false` otherwise
     #[inline(always)]
     pub fn is_full(&self) -> bool {
-        self.len() == FIRECRACKER_MAX_QUEUE_SIZE
+        self.len() == 2 * FIRECRACKER_MAX_QUEUE_SIZE
     }
 
     /// Resets the queue, dropping all its elements.
@@ -261,8 +261,8 @@ impl IovDeque {
 
         self.start += nr_iovecs;
         self.len -= nr_iovecs;
-        if self.start >= FIRECRACKER_MAX_QUEUE_SIZE {
-            self.start -= FIRECRACKER_MAX_QUEUE_SIZE;
+        if self.start >= 2 * FIRECRACKER_MAX_QUEUE_SIZE {
+            self.start -= 2 * FIRECRACKER_MAX_QUEUE_SIZE;
         }
     }
 

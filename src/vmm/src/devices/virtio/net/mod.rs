@@ -11,7 +11,7 @@ use crate::devices::virtio::queue::FIRECRACKER_MAX_QUEUE_SIZE;
 pub const MAX_BUFFER_SIZE: usize = 65562;
 /// The number of queues of the network device.
 pub const NET_NUM_QUEUES: usize = 2;
-pub const NET_QUEUE_SIZES: [u16; NET_NUM_QUEUES] = [FIRECRACKER_MAX_QUEUE_SIZE; NET_NUM_QUEUES];
+pub const NET_QUEUE_SIZES: [u16; NET_NUM_QUEUES] = [2 * FIRECRACKER_MAX_QUEUE_SIZE; NET_NUM_QUEUES];
 /// The index of the rx queue from Net device queues/queues_evts vector.
 pub const RX_INDEX: usize = 0;
 /// The index of the tx queue from Net device queues/queues_evts vector.
