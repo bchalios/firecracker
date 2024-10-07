@@ -1,6 +1,7 @@
 // Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::VecDeque;
 use std::io::ErrorKind;
 
 use libc::{c_void, iovec, size_t};
@@ -12,7 +13,8 @@ use vm_memory::{
     GuestMemory, GuestMemoryError, ReadVolatile, VolatileMemoryError, VolatileSlice, WriteVolatile,
 };
 
-use super::iov_deque::{IovDeque, IovDequeError};
+use super::iov_deque::IovDequeError;
+use super::queue::FIRECRACKER_MAX_QUEUE_SIZE;
 use crate::devices::virtio::queue::DescriptorChain;
 use crate::vstate::memory::GuestMemoryMmap;
 
@@ -234,12 +236,22 @@ pub struct ParsedDescriptorChain {
 #[derive(Debug)]
 pub struct IoVecBufferMut {
     // container of the memory regions included in this IO vector
-    pub vecs: IovDeque,
+    pub vecs: VecDeque<iovec>,
     // Total length of the IoVecBufferMut
     pub len: usize,
 }
 
+// SAFETY: `IoVecBuffer` doesn't allow for interior mutability and no shared ownership is possible
+// as it doesn't implement clone
+unsafe impl Send for IoVecBufferMut {}
+
 impl IoVecBufferMut {
+    fn pop_front(&mut self, nr_iovecs: u16) {
+        for _ in 0..nr_iovecs {
+            let _ = self.vecs.pop_front();
+        }
+    }
+
     /// Parse a `DescriptorChain` object and append the memory regions it describes in the
     /// underlying ring buffer.
     ///
@@ -257,7 +269,7 @@ impl IoVecBufferMut {
         let mut nr_iovecs = 0u16;
         while let Some(desc) = next_descriptor {
             if !desc.is_write_only() {
-                self.vecs.pop_front(nr_iovecs);
+                self.pop_front(nr_iovecs);
                 return Err(IoVecError::ReadOnlyDescriptor);
             }
 
@@ -265,7 +277,7 @@ impl IoVecBufferMut {
             // range of the descriptor chain checked, i.e. [addr, addr + len) is a valid memory
             // region in the GuestMemoryMmap.
             let slice = mem.get_slice(desc.addr, desc.len as usize).map_err(|err| {
-                self.vecs.pop_front(nr_iovecs);
+                self.pop_front(nr_iovecs);
                 err
             })?;
 
@@ -284,7 +296,7 @@ impl IoVecBufferMut {
                 .checked_add(desc.len)
                 .ok_or(IoVecError::OverflowedDescriptor)
                 .map_err(|err| {
-                    self.vecs.pop_front(nr_iovecs);
+                    self.pop_front(nr_iovecs);
                     err
                 })?;
 
@@ -292,7 +304,7 @@ impl IoVecBufferMut {
         }
 
         self.len = self.len.checked_add(length as usize).ok_or_else(|| {
-            self.vecs.pop_front(nr_iovecs);
+            self.pop_front(nr_iovecs);
             IoVecError::OverflowedDescriptor
         })?;
 
@@ -305,8 +317,10 @@ impl IoVecBufferMut {
 
     /// Create an empty `IoVecBufferMut`.
     pub fn new() -> Result<Self, IovDequeError> {
-        let vecs = IovDeque::new()?;
-        Ok(Self { vecs, len: 0 })
+        Ok(Self {
+            vecs: VecDeque::with_capacity(FIRECRACKER_MAX_QUEUE_SIZE as usize),
+            len: 0,
+        })
     }
 
     /// Create an `IoVecBufferMut` from a `DescriptorChain`
@@ -344,7 +358,7 @@ impl IoVecBufferMut {
     ///
     /// This will drop memory described by the `IoVecBufferMut` from the beginning.
     pub fn drop_descriptor_chain(&mut self, parse_descriptor: &ParsedDescriptorChain) {
-        self.vecs.pop_front(parse_descriptor.nr_iovecs);
+        self.pop_front(parse_descriptor.nr_iovecs);
         self.len -= parse_descriptor.length as usize;
     }
 
@@ -378,7 +392,7 @@ impl IoVecBufferMut {
 
     /// Returns a pointer to the memory keeping the `iovec` structs
     pub fn as_iovec_mut_slice(&mut self) -> &mut [iovec] {
-        self.vecs.as_mut_slice()
+        self.vecs.make_contiguous()
     }
 
     /// Clears the `iovec` array
@@ -432,7 +446,7 @@ impl IoVecBufferMut {
     ) -> Result<usize, VolatileMemoryError> {
         let mut total_bytes_read = 0;
 
-        for iov in self.vecs.as_slice() {
+        for iov in self.vecs.make_contiguous() {
             if len == 0 {
                 break;
             }
@@ -477,11 +491,12 @@ impl IoVecBufferMut {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use libc::{c_void, iovec};
     use vm_memory::VolatileMemoryError;
 
     use super::{IoVecBuffer, IoVecBufferMut};
-    use crate::devices::virtio::iov_deque::IovDeque;
     use crate::devices::virtio::queue::{Queue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
     use crate::devices::virtio::test_utils::VirtQueue;
     use crate::test_utils::multi_region_mem;
@@ -520,7 +535,7 @@ mod tests {
 
     impl From<&mut [u8]> for IoVecBufferMut {
         fn from(buf: &mut [u8]) -> Self {
-            let mut vecs = IovDeque::new().unwrap();
+            let mut vecs = VecDeque::new();
             vecs.push_back(iovec {
                 iov_base: buf.as_mut_ptr().cast::<c_void>(),
                 iov_len: buf.len(),
@@ -536,7 +551,7 @@ mod tests {
     impl From<Vec<&mut [u8]>> for IoVecBufferMut {
         fn from(buffer: Vec<&mut [u8]>) -> Self {
             let mut len = 0usize;
-            let mut vecs = IovDeque::new().unwrap();
+            let mut vecs = VecDeque::new();
             for slice in buffer {
                 len += slice.len();
 

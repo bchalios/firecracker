@@ -1,6 +1,8 @@
 // Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(dead_code)]
+
 use std::os::fd::AsRawFd;
 
 use libc::{c_int, c_void, iovec, off_t, size_t};
