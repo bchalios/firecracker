@@ -90,10 +90,12 @@ def test_network_latency(network_microvm, metrics):
 @pytest.mark.parametrize("network_microvm", [1, 2], indirect=True)
 @pytest.mark.parametrize("payload_length", ["128K", "1024K"], ids=["p128K", "p1024K"])
 @pytest.mark.parametrize("mode", ["g2h", "h2g", "bd"])
+@pytest.mark.parametrize("throughput_limit", ["unlimited", "25G", "10G", "1G"])
 def test_network_tcp_throughput(
     network_microvm,
     payload_length,
     mode,
+    throughput_limit,
     metrics,
 ):
     """
@@ -117,6 +119,7 @@ def test_network_tcp_throughput(
             "performance_test": "test_network_tcp_throughput",
             "payload_length": payload_length,
             "mode": mode,
+            "throughput": throughput_limit,
             **network_microvm.dimensions,
         }
     )
@@ -127,6 +130,7 @@ def test_network_tcp_throughput(
         runtime=runtime_sec,
         omit=warmup_sec,
         mode=mode,
+        throughput_limit=throughput_limit,
         num_clients=network_microvm.vcpus_count,
         connect_to=network_microvm.iface["eth0"]["iface"].host_ip,
         payload_length=payload_length,

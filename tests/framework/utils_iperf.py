@@ -20,6 +20,7 @@ class IPerf3Test:
         runtime,
         omit,
         mode,
+        throughput_limit,
         num_clients,
         connect_to,
         *,
@@ -31,6 +32,7 @@ class IPerf3Test:
         self._runtime = runtime
         self._omit = omit
         self._mode = mode  # entry into mode-map
+        self._throughput_limit = (throughput_limit,)
         self._num_clients = num_clients
         self._connect_to = connect_to  # the "host" value to pass to "--client"
         self._payload_length = payload_length  # the value to pass to "--len"
@@ -67,8 +69,14 @@ class IPerf3Test:
             for client_idx in range(self._num_clients):
                 client_mode = self.client_mode(client_idx)
                 client_mode_flag = self.client_mode_to_iperf3_flag(client_mode)
+                throughput_limit_flag = self.throughput_limit_to_iperf3_flag(
+                    self._throughput_limit
+                )
                 client_future = executor.submit(
-                    self.spawn_iperf3_client, client_idx, client_mode_flag
+                    self.spawn_iperf3_client,
+                    client_idx,
+                    client_mode_flag,
+                    throughput_limit_flag,
                 )
                 clients.append((client_mode, client_future))
 
@@ -105,7 +113,15 @@ class IPerf3Test:
                 client_mode_flag = "-R"
         return client_mode_flag
 
-    def spawn_iperf3_client(self, client_idx, client_mode_flag):
+    @staticmethod
+    def throughput_limit_to_iperf3_flag(throughput_limit):
+        """Converts throughput limit into iperf3 flag"""
+        if throughput_limit == "unlimited":
+            return ""
+        else:
+            return f"-b {throughput_limit}"
+
+    def spawn_iperf3_client(self, client_idx, client_mode_flag, throughput_limit_flag):
         """
         Spawns an iperf3 client within the guest. The `client_idx` determines what direction data should flow
         for this particular client (e.g. client-to-server or server-to-client)
