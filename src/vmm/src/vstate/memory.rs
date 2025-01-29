@@ -76,7 +76,7 @@ where
         huge_pages: HugePageConfig,
     ) -> Result<Self, MemoryError> {
         let memfd_file = create_memfd(mem_size_mib, huge_pages.into())?.into_file();
-        let regions = arch_memory_regions(mem_size_mib << 20).into_iter();
+        let regions = arch_memory_regions(0, mem_size_mib << 20).into_iter();
 
         Self::create(
             regions,

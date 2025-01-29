@@ -5,10 +5,7 @@ use std::convert::From;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use libc::MAP_PRIVATE;
-use log::debug;
 use serde::{Deserialize, Serialize};
-use vm_memory::{Address, GuestMemory};
 
 use crate::cpu_config::templates::CustomCpuTemplate;
 use crate::device_manager::persist::SharedDeviceType;
@@ -32,9 +29,7 @@ use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::*;
 use crate::vmm_config::pmem::{PmemBuilder, PmemConfigError, PmemDeviceConfig};
 use crate::vmm_config::vsock::*;
-use crate::vstate::memory::{
-    mmap_region_from_file, GuestMemoryExtension, GuestMemoryMmap, MemoryError,
-};
+use crate::vstate::memory::{GuestMemoryExtension, GuestMemoryMmap, MemoryError};
 
 /// Errors encountered when configuring microVM resources.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -493,7 +488,8 @@ impl VmResources {
                 self.machine_config.huge_pages,
             )
         } else {
-            let regions = crate::arch::arch_memory_regions(self.machine_config.mem_size_mib << 20);
+            let regions =
+                crate::arch::arch_memory_regions(0, self.machine_config.mem_size_mib << 20);
             GuestMemoryMmap::anonymous(
                 regions.into_iter(),
                 self.machine_config.track_dirty_pages,
