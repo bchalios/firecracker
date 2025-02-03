@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::SeekFrom;
 
 use libc::c_int;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 pub use vm_memory::bitmap::{AtomicBitmap, Bitmap, BitmapSlice, BS};
 pub use vm_memory::mmap::MmapRegionBuilder;
@@ -163,6 +164,35 @@ impl GuestMemoryState {
             .iter()
             .map(|region| (GuestAddress(region.base_address), region.size))
     }
+}
+
+/// TBD
+pub fn mmap_region_from_file(
+    file: &File,
+    start: GuestAddress,
+    size: usize,
+    mmap_flags: c_int,
+    _track_dirty_pages: bool,
+) -> Result<GuestRegionMmap, MemoryError> {
+    debug!("mem: mmap-ing File: {:#?}", file);
+    let mut builder = MmapRegionBuilder::new(size)
+        .with_mmap_prot(libc::PROT_READ)
+        .with_mmap_flags(libc::MAP_NORESERVE | mmap_flags);
+
+    let file_offset = FileOffset::new(file.try_clone().map_err(MemoryError::FileError)?, 0);
+    builder = builder.with_file_offset(file_offset);
+
+    GuestRegionMmap::new(
+        builder.build().map_err(|err| {
+            error!("Could not mmap file: {err}");
+            MemoryError::MmapRegionError(err)
+        })?,
+        start,
+    )
+    .map_err(|err| {
+        error!("mem: damn {err}");
+        MemoryError::VmMemoryError(err)
+    })
 }
 
 impl GuestMemoryExtension for GuestMemoryMmap {
@@ -699,7 +729,7 @@ mod tests {
 
         guest_memory.store_dirty_bitmap(&dirty_bitmap, page_size);
 
-        // Assert that the bitmap now reports as being dirty maching the dirty bitmap
+        // Assert that the bitmap now reports as being dirty matching the dirty bitmap
         guest_memory.iter().for_each(|r| {
             assert!(r.bitmap().dirty_at(0));
             assert!(!r.bitmap().dirty_at(page_size));

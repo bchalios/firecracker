@@ -54,6 +54,7 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::devices::virtio::mmio::MmioTransport;
 use crate::devices::virtio::net::Net;
+use crate::devices::virtio::pmem::device::Pmem;
 use crate::devices::virtio::rng::Entropy;
 use crate::devices::virtio::vsock::{Vsock, VsockUnixBackend};
 use crate::devices::BusDevice;
@@ -328,6 +329,16 @@ pub fn build_microvm_for_boot(
         &mut vmm,
         &mut boot_cmdline,
         vm_resources.net_builder.iter(),
+        event_manager,
+    )?;
+    debug!(
+        "vmm: atthaching {} pmem devices",
+        vm_resources.pmem.devices.len()
+    );
+    attach_pmem_devices(
+        &mut vmm,
+        &mut boot_cmdline,
+        vm_resources.pmem.devices.iter(),
         event_manager,
     )?;
 
@@ -1009,6 +1020,19 @@ fn attach_net_devices<'a, I: Iterator<Item = &'a Arc<Mutex<Net>>> + Debug>(
         let id = net_device.lock().expect("Poisoned lock").id().clone();
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_virtio_device(event_manager, vmm, id, net_device.clone(), cmdline, false)?;
+    }
+    Ok(())
+}
+
+fn attach_pmem_devices<'a, I: Iterator<Item = &'a Arc<Mutex<Pmem>>> + Debug>(
+    vmm: &mut Vmm,
+    cmdline: &mut LoaderKernelCmdline,
+    pmem_devices: I,
+    event_manager: &mut EventManager,
+) -> Result<(), StartMicrovmError> {
+    for dev in pmem_devices {
+        let id = dev.lock().expect("Poisoned lock").id().to_string();
+        attach_virtio_device(event_manager, vmm, id, dev.clone(), cmdline, false)?;
     }
     Ok(())
 }

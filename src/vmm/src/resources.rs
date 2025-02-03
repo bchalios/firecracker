@@ -5,7 +5,10 @@ use std::convert::From;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use libc::MAP_PRIVATE;
+use log::debug;
 use serde::{Deserialize, Serialize};
+use vm_memory::{Address, GuestMemory};
 
 use crate::cpu_config::templates::CustomCpuTemplate;
 use crate::device_manager::persist::SharedDeviceType;
@@ -27,8 +30,11 @@ use crate::vmm_config::machine_config::{
 use crate::vmm_config::metrics::{init_metrics, MetricsConfig, MetricsConfigError};
 use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::*;
+use crate::vmm_config::pmem::{PmemBuilder, PmemConfigError, PmemDeviceConfig};
 use crate::vmm_config::vsock::*;
-use crate::vstate::memory::{GuestMemoryExtension, GuestMemoryMmap, MemoryError};
+use crate::vstate::memory::{
+    mmap_region_from_file, GuestMemoryExtension, GuestMemoryMmap, MemoryError,
+};
 
 /// Errors encountered when configuring microVM resources.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -59,6 +65,8 @@ pub enum ResourcesError {
     VsockDevice(#[from] VsockConfigError),
     /// Entropy device error: {0}
     EntropyDevice(#[from] EntropyDeviceError),
+    /// Pmem device error: {0}
+    PmemDevice(#[from] PmemConfigError),
 }
 
 /// Used for configuring a vmm from one single json passed to the Firecracker process.
@@ -86,6 +94,8 @@ pub struct VmmConfig {
     vsock_device: Option<VsockDeviceConfig>,
     #[serde(rename = "entropy")]
     entropy_device: Option<EntropyDeviceConfig>,
+    #[serde(rename = "pmem")]
+    pmem_devices: Vec<PmemDeviceConfig>,
 }
 
 /// A data structure that encapsulates the device configurations
@@ -106,6 +116,8 @@ pub struct VmResources {
     pub net_builder: NetBuilder,
     /// The entropy device builder.
     pub entropy: EntropyDeviceBuilder,
+    /// The pmem devices.
+    pub pmem: PmemBuilder,
     /// The optional Mmds data store.
     // This is initialised on demand (if ever used), so that we don't allocate it unless it's
     // actually used.
@@ -158,6 +170,10 @@ impl VmResources {
 
         for net_config in vmm_config.net_devices.into_iter() {
             resources.build_net_device(net_config)?;
+        }
+
+        for pmem_config in vmm_config.pmem_devices.into_iter() {
+            resources.build_pmem_device(pmem_config)?;
         }
 
         if let Some(vsock_config) = vmm_config.vsock_device {
@@ -357,6 +373,12 @@ impl VmResources {
         Ok(())
     }
 
+    /// Builds a pmem device to be attached when the VM starts.
+    pub fn build_pmem_device(&mut self, body: PmemDeviceConfig) -> Result<(), PmemConfigError> {
+        let _ = self.pmem.build(body)?;
+        Ok(())
+    }
+
     /// Sets a vsock device to be attached when the VM starts.
     pub fn set_vsock_device(&mut self, config: VsockDeviceConfig) -> Result<(), VsockConfigError> {
         self.vsock.insert(config)
@@ -464,7 +486,7 @@ impl VmResources {
         // because that would require running a backend process. If in the future we converge to
         // a single way of backing guest memory for vhost-user and non-vhost-user cases,
         // that would not be worth the effort.
-        if vhost_user_device_used {
+        let mut mmap = if vhost_user_device_used {
             GuestMemoryMmap::memfd_backed(
                 self.machine_config.mem_size_mib,
                 self.machine_config.track_dirty_pages,
@@ -477,7 +499,36 @@ impl VmResources {
                 self.machine_config.track_dirty_pages,
                 self.machine_config.huge_pages,
             )
+        }?;
+
+        debug!("vmm: allocating memory for pmem devices");
+        // TODO: fix this. For example, this doesn't take into account the MMIO gap in x86.
+        let mut pmem_addr = mmap.last_addr().unchecked_add(1);
+        for dev in self.pmem.devices.iter() {
+            let mut locked_dev = dev.lock().expect("Poisoned lock");
+
+            debug!(
+                "vmm: allocating {} bytes for pmem device at guest address {:#x?}",
+                locked_dev.size, pmem_addr.0
+            );
+            let region = mmap_region_from_file(
+                &locked_dev.backing_file,
+                pmem_addr,
+                locked_dev.size,
+                MAP_PRIVATE,
+                false,
+            )
+            .map_err(|err| {
+                debug!("error: building pmem device failed: {err}");
+                err
+            })?;
+
+            mmap = mmap.insert_region(Arc::new(region)).unwrap();
+            locked_dev.config_space.start = pmem_addr.0;
+            pmem_addr = pmem_addr.unchecked_add(locked_dev.size as u64);
         }
+
+        Ok(mmap)
     }
 }
 
@@ -495,6 +546,7 @@ impl From<&VmResources> for VmmConfig {
             net_devices: resources.net_builder.configs(),
             vsock_device: resources.vsock.config(),
             entropy_device: resources.entropy.config(),
+            pmem_devices: resources.pmem.configs(),
         }
     }
 }
@@ -604,6 +656,7 @@ mod tests {
             boot_timer: false,
             mmds_size_limit: HTTP_MAX_PAYLOAD_SIZE,
             entropy: Default::default(),
+            pmem: Default::default(),
         }
     }
 
