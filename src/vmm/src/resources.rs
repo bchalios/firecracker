@@ -486,7 +486,7 @@ impl VmResources {
         // because that would require running a backend process. If in the future we converge to
         // a single way of backing guest memory for vhost-user and non-vhost-user cases,
         // that would not be worth the effort.
-        let mut mmap = if vhost_user_device_used {
+        if vhost_user_device_used {
             GuestMemoryMmap::memfd_backed(
                 self.machine_config.mem_size_mib,
                 self.machine_config.track_dirty_pages,
@@ -499,36 +499,7 @@ impl VmResources {
                 self.machine_config.track_dirty_pages,
                 self.machine_config.huge_pages,
             )
-        }?;
-
-        debug!("vmm: allocating memory for pmem devices");
-        // TODO: fix this. For example, this doesn't take into account the MMIO gap in x86.
-        let mut pmem_addr = mmap.last_addr().unchecked_add(1);
-        for dev in self.pmem.devices.iter() {
-            let mut locked_dev = dev.lock().expect("Poisoned lock");
-
-            debug!(
-                "vmm: allocating {} bytes for pmem device at guest address {:#x?}",
-                locked_dev.size, pmem_addr.0
-            );
-            let region = mmap_region_from_file(
-                &locked_dev.backing_file,
-                pmem_addr,
-                locked_dev.size,
-                MAP_PRIVATE,
-                false,
-            )
-            .map_err(|err| {
-                debug!("error: building pmem device failed: {err}");
-                err
-            })?;
-
-            mmap = mmap.insert_region(Arc::new(region)).unwrap();
-            locked_dev.config_space.start = pmem_addr.0;
-            pmem_addr = pmem_addr.unchecked_add(locked_dev.size as u64);
         }
-
-        Ok(mmap)
     }
 }
 
