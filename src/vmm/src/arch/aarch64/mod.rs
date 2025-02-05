@@ -51,6 +51,10 @@ pub fn arch_memory_regions(offset: usize, size: usize) -> Vec<(GuestAddress, usi
     )]
 }
 
+pub fn arch_first_contiguous_region(offset: usize, size: usize) -> GuestAddress {
+    GuestAddress(layout::DRAM_MEM_START + offset as u64)
+}
+
 /// Configures the system and should be called once per vm before starting vcpu threads.
 /// For aarch64, we only setup the FDT.
 ///

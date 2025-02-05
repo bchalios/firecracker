@@ -313,6 +313,7 @@ pub struct Vmm {
     kvm: Kvm,
     vm: Vm,
     guest_memory: GuestMemoryMmap,
+    pub pmem_memory: Option<GuestMemoryMmap>,
     // Save UFFD in order to keep it open in the Firecracker process, as well.
     uffd: Option<Uffd>,
     vcpus_handles: Vec<VcpuHandle>,

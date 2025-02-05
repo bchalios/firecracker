@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use event_manager::{MutEventSubscriber, SubscriberOps};
-use libc::EFD_NONBLOCK;
+use libc::{EFD_NONBLOCK, MAP_PRIVATE};
 use linux_loader::cmdline::Cmdline as LoaderKernelCmdline;
 #[cfg(target_arch = "x86_64")]
 use linux_loader::loader::elf::Elf as Loader;
@@ -21,7 +21,7 @@ use linux_loader::loader::pe::PE as Loader;
 use linux_loader::loader::KernelLoader;
 use userfaultfd::Uffd;
 use utils::time::TimestampUs;
-use vm_memory::ReadVolatile;
+use vm_memory::{Address, ReadVolatile};
 #[cfg(target_arch = "aarch64")]
 use vm_superio::Rtc;
 use vm_superio::Serial;
@@ -29,7 +29,7 @@ use vmm_sys_util::eventfd::EventFd;
 
 #[cfg(target_arch = "x86_64")]
 use crate::acpi;
-use crate::arch::InitrdConfig;
+use crate::arch::{self, InitrdConfig};
 #[cfg(target_arch = "aarch64")]
 use crate::construct_kvm_mpidrs;
 use crate::cpu_config::templates::{
@@ -70,7 +70,7 @@ use crate::vmm_config::boot_source::BootConfig;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{MachineConfig, MachineConfigError};
 use crate::vstate::kvm::Kvm;
-use crate::vstate::memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
+use crate::vstate::memory::{mmap_region_from_file, GuestAddress, GuestMemory, GuestMemoryMmap};
 use crate::vstate::vcpu::{Vcpu, VcpuConfig, VcpuError};
 use crate::vstate::vm::Vm;
 use crate::{device_manager, EventManager, Vmm, VmmError};
@@ -237,6 +237,7 @@ fn create_vmm_and_vcpus(
         kvm,
         vm,
         guest_memory,
+        pmem_memory: None,
         uffd,
         vcpus_handles: Vec::new(),
         vcpus_exit_evt,
@@ -1030,10 +1031,49 @@ fn attach_pmem_devices<'a, I: Iterator<Item = &'a Arc<Mutex<Pmem>>> + Debug>(
     pmem_devices: I,
     event_manager: &mut EventManager,
 ) -> Result<(), StartMicrovmError> {
+    let mut regions = vec![];
+    let mut offset = u64_to_usize(vmm.guest_memory.last_addr().unchecked_add(1).0);
+    debug!("Last used address: {}", vmm.guest_memory.last_addr().0);
+
     for dev in pmem_devices {
-        let id = dev.lock().expect("Poisoned lock").id().to_string();
+        let id = {
+            let mut locked_dev = dev.lock().expect("Poisoned lock");
+            let addr = arch::arch_first_contiguous_region(offset, locked_dev.size);
+            debug!(
+                "Creating region for pmem {}: @guest addr: {}",
+                locked_dev.id(),
+                addr.0
+            );
+            let region = mmap_region_from_file(
+                &locked_dev.backing_file,
+                addr,
+                locked_dev.size,
+                MAP_PRIVATE,
+                false,
+            )
+            .unwrap();
+
+            locked_dev.config_space.start = addr.0;
+            locked_dev.config_space.size = locked_dev.size as u64;
+
+            regions.push(region);
+            offset += locked_dev.size;
+            locked_dev.id().to_string()
+        };
+
         attach_virtio_device(event_manager, vmm, id, dev.clone(), cmdline, false)?;
     }
+
+    let pmem_mmap = GuestMemoryMmap::from_regions(regions).unwrap();
+    vmm.vm
+        .set_kvm_memory_regions(
+            vmm.guest_memory.num_regions().try_into().unwrap(),
+            true,
+            &pmem_mmap,
+        )
+        .unwrap();
+
+    vmm.pmem_memory = Some(pmem_mmap);
     Ok(())
 }
 

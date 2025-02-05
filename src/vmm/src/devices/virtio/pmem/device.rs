@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::fs::OpenOptions;
 
+use log::debug;
 use log::error;
 use vm_memory::GuestAddress;
 use vm_memory::GuestMemoryError;
@@ -267,6 +268,10 @@ impl VirtioDevice for Pmem {
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
+        debug!(
+            "pmem: reading {} bytes of PMEM config at offset: {offset}",
+            data.len()
+        );
         if let Some(config_space_bytes) = self.config_space.as_slice().get(u64_to_usize(offset)..) {
             let len = config_space_bytes.len().min(data.len());
             data[..len].copy_from_slice(&config_space_bytes[..len]);
