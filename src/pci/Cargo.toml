@@ -1,0 +1,22 @@
+[package]
+authors = ["Samuel Ortiz <sameo@linux.intel.com>"]
+edition = "2021"
+name = "pci"
+version = "0.1.0"
+
+[features]
+default = []
+
+[dependencies]
+anyhow = "1.0.94"
+byteorder = "1.5.0"
+libc = "0.2.167"
+log = "0.4.22"
+serde = { version = "1.0.208", features = ["derive"] }
+thiserror = "2.0.6"
+vm-allocator = "0.1.0"
+vm-device = { path = "../vm-device" }
+vm-memory = { version = "0.16.1", features = [
+  "backend-mmap",
+  "backend-bitmap",
+] }
