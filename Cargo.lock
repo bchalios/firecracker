@@ -1640,6 +1640,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vm-device"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "vm-fdt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1701,6 +1709,7 @@ dependencies = [
  "utils",
  "vhost",
  "vm-allocator",
+ "vm-device",
  "vm-fdt",
  "vm-memory",
  "vm-superio",

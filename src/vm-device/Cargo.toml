@@ -1,0 +1,13 @@
+[package]
+authors = ["The Cloud Hypervisor Authors"]
+edition = "2021"
+name = "vm-device"
+version = "0.1.0"
+license = "Apache-2.0 AND BSD-3-Clause"
+
+[features]
+default = []
+
+[dependencies]
+serde = { version = "1.0.208", features = ["derive", "rc"] }
+vmm-sys-util = { version = "0.12.1", features = ["with-serde"] }
