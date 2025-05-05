@@ -82,3 +82,46 @@ pub const IRQ_BASE: u32 = 32;
 
 /// Below this address will reside the GIC, above this address will reside the MMIO devices.
 pub const MAPPED_IO_START: u64 = 1 << 30; // 1 GB
+
+/// The start of the memory area reserved for MMIO 32-bit accesses.
+pub const MMIO32_MEM_START: u64 = MAPPED_IO_START;
+/// The size of the memory area reserved for MMIO 32-bit accesses (1GiB).
+pub const MMIO32_MEM_SIZE: u64 = DRAM_MEM_START - MMIO32_MEM_START;
+
+// The rest of the MMIO address space (256 MiB) we dedicate to PCIe for memory-mapped access to
+// configuration.
+/// Size of MMIO region for PCIe configuration accesses.
+pub const PCI_MMCONFIG_SIZE: u64 = 256 << 20;
+/// Start of MMIO region for PCIe configuration accesses.
+pub const PCI_MMCONFIG_START: u64 = DRAM_MEM_START - PCI_MMCONFIG_SIZE;
+/// MMIO space per PCIe segment
+pub const PCI_MMIO_CONFIG_SIZE_PER_SEGMENT: u64 = 4096 * 256;
+
+// We reserve 768 MiB for devices at the beginning of the MMIO region. This includes space both for
+// pure MMIO and PCIe devices.
+
+/// Memory region start for boot device.
+pub const BOOT_DEVICE_MEM_START: u64 = MMIO32_MEM_START;
+/// Memory region start for RTC device.
+pub const RTC_MEM_START: u64 = BOOT_DEVICE_MEM_START + 0x1000;
+/// Memory region start for Serial device.
+pub const SERIAL_MEM_START: u64 = RTC_MEM_START + 0x1000;
+
+/// Beginning of memory region for device MMIO 32-bit accesses
+pub const MEM_32BIT_DEVICES_START: u64 = SERIAL_MEM_START + 0x1000;
+/// Size of memory region for device MMIO 32-bit accesses
+pub const MEM_32BIT_DEVICES_SIZE: u64 = PCI_MMCONFIG_START - MEM_32BIT_DEVICES_START;
+
+// 64-bits region for MMIO accesses
+/// The start of the memory area reserved for MMIO 64-bit accesses.
+pub const MMIO64_MEM_START: u64 = 256 << 30;
+/// The size of the memory area reserved for MMIO 64-bit accesses.
+pub const MMIO64_MEM_SIZE: u64 = 256 << 30;
+
+// At the moment, all of this region goes to devices
+/// Beginning of memory region for device MMIO 64-bit accesses
+pub const MEM_64BIT_DEVICES_START: u64 = MMIO64_MEM_START;
+/// Size of memory region for device MMIO 32-bit accesses
+pub const MEM_64BIT_DEVICES_SIZE: u64 = MMIO64_MEM_SIZE;
+/// First address past the 64-bit MMIO gap
+pub const FIRST_ADDR_PAST_64BITS_MMIO: u64 = MMIO64_MEM_START + MMIO64_MEM_SIZE;
