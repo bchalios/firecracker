@@ -435,7 +435,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
 
                     constructor_args
                         .resource_allocator
-                        .allocate_mmio_memory(
+                        .allocate_32bit_mmio_memory(
                             MMIO_LEN,
                             MMIO_LEN,
                             AllocPolicy::ExactMatch(state.device_info.addr),
@@ -456,7 +456,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
                     let rtc = Arc::new(Mutex::new(RTCDevice::new()));
                     constructor_args
                         .resource_allocator
-                        .allocate_mmio_memory(
+                        .allocate_32bit_mmio_memory(
                             MMIO_LEN,
                             MMIO_LEN,
                             AllocPolicy::ExactMatch(state.device_info.addr),
@@ -507,7 +507,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
 
             constructor_args
                 .resource_allocator
-                .allocate_mmio_memory(
+                .allocate_32bit_mmio_memory(
                     MMIO_LEN,
                     MMIO_LEN,
                     AllocPolicy::ExactMatch(device_info.addr),

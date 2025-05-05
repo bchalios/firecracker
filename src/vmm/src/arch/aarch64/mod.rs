@@ -24,11 +24,11 @@ use linux_loader::loader::pe::PE as Loader;
 use linux_loader::loader::{Cmdline, KernelLoader};
 use vm_memory::GuestMemoryError;
 
-use crate::arch::{BootProtocol, EntryPoint};
+use crate::arch::{BootProtocol, EntryPoint, arch_memory_regions_with_gap};
 use crate::cpu_config::aarch64::{CpuConfiguration, CpuConfigurationError};
 use crate::cpu_config::templates::CustomCpuTemplate;
 use crate::initrd::InitrdConfig;
-use crate::utils::{align_up, usize_to_u64};
+use crate::utils::{align_up, u64_to_usize, usize_to_u64};
 use crate::vmm_config::machine_config::MachineConfig;
 use crate::vstate::memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 use crate::vstate::vcpu::KvmVcpuError;
@@ -51,11 +51,6 @@ pub enum ConfigurationError {
     VcpuConfigure(#[from] KvmVcpuError),
 }
 
-/// The start of the memory area reserved for MMIO devices.
-pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
-/// The size of the memory area reserved for MMIO devices.
-pub const MMIO_MEM_SIZE: u64 = layout::DRAM_MEM_START - layout::MAPPED_IO_START; //>> 1GB
-
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
 ///
@@ -71,7 +66,10 @@ pub fn arch_memory_regions(offset: usize, size: usize) -> Vec<(GuestAddress, usi
         "offset outside allowed DRAM range"
     );
 
-    let dram_size = min(size, layout::DRAM_MEM_MAX_SIZE - offset);
+    let dram_size = min(
+        size,
+        layout::DRAM_MEM_MAX_SIZE - offset - u64_to_usize(layout::MMIO64_MEM_SIZE),
+    );
 
     if dram_size != size {
         logger::warn!(
@@ -83,10 +81,18 @@ pub fn arch_memory_regions(offset: usize, size: usize) -> Vec<(GuestAddress, usi
         );
     }
 
-    vec![(
-        GuestAddress(layout::DRAM_MEM_START + offset as u64),
-        dram_size,
-    )]
+    let mut regions = vec![];
+    if let Some((offset, remaining)) = arch_memory_regions_with_gap(
+        &mut regions,
+        usize::try_from(layout::DRAM_MEM_START).unwrap() + offset,
+        size,
+        u64_to_usize(layout::MMIO64_MEM_START),
+        u64_to_usize(layout::MMIO64_MEM_SIZE),
+    ) {
+        regions.push((GuestAddress(offset as u64), remaining));
+    }
+
+    regions
 }
 
 /// Configures the system for booting Linux.
@@ -228,22 +234,43 @@ mod verification {
 
         let regions = arch_memory_regions(offset as usize, len as usize);
 
-        // No MMIO gap on ARM
-        assert_eq!(regions.len(), 1);
+        // On Arm we have one MMIO gap that might fall within addressable ranges,
+        // so we can get either 1 or 2 regions.
+        assert!(regions.len() >= 1);
+        assert!(regions.len() <= 2);
 
-        let (GuestAddress(start), actual_len) = regions[0];
-        let actual_len = actual_len as u64;
-
+        // The very first address should be offset bytes past DRAM_MEM_START
         assert_eq!(start, layout::DRAM_MEM_START + offset);
+        // The total length of all regions cannot exceed DRAM_MEM_MAX_SIZE
+        let actual_len = regions.iter().map(|&(_, len)| len).sum::<usize>();
         assert!(actual_len <= layout::DRAM_MEM_MAX_SIZE as u64);
+        // The total length is smaller or equal to the length we asked
         assert!(actual_len <= len);
-
+        // If it's smaller, it's because we asked more than the the maximum possible.
         if actual_len < len {
-            assert_eq!(
-                start + actual_len,
-                layout::DRAM_MEM_START + layout::DRAM_MEM_MAX_SIZE as u64
-            );
             assert!(offset + len >= layout::DRAM_MEM_MAX_SIZE as u64);
+        }
+
+        // No region overlaps the 64-bit MMIO gap
+        assert!(
+            regions
+                .iter()
+                .all(|&(start, len)| start.0 >= FIRST_ADDR_PAST_64BITS_MMIO
+                    || start.0 + len as u64 <= MMIO64_MEM_START)
+        );
+
+        // All regions start after our specified offset
+        assert!(regions.iter().all(|&(start, _)| start.0 >= offset as u64));
+
+        // All regions have non-zero length
+        assert!(regions.iter().all(|&(_, len)| len > 0));
+
+        // If there's two regions, they perfectly snuggle up the 64bit MMIO gap
+        if regions.len() == 2 {
+            kani::cover!();
+
+            assert_eq!(regions[0].0.0 + regions[0].1 as u64, MMIO32_MEM_START);
+            assert_eq!(regions[1].0.0, FIRST_ADDR_PAST_32BITS);
         }
     }
 }

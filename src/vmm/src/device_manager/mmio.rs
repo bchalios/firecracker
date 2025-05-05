@@ -176,7 +176,7 @@ impl MMIODeviceManager {
         };
 
         let device_info = MMIODeviceInfo {
-            addr: resource_allocator.allocate_mmio_memory(
+            addr: resource_allocator.allocate_32bit_mmio_memory(
                 MMIO_LEN,
                 MMIO_LEN,
                 AllocPolicy::FirstMatch,
@@ -698,7 +698,7 @@ pub(crate) mod tests {
 
         assert!(device_manager.get_virtio_device(0, "foo").is_none());
         let dev = device_manager.get_virtio_device(0, "dummy").unwrap();
-        assert_eq!(dev.resources.addr, arch::MMIO_MEM_START);
+        assert_eq!(dev.resources.addr, arch::MMIO32_MEM_START);
         assert_eq!(dev.resources.len, MMIO_LEN);
         assert_eq!(
             dev.resources.irq,
@@ -709,7 +709,7 @@ pub(crate) mod tests {
             .for_each_virtio_device(|virtio_type, device_id, mmio_device| {
                 assert_eq!(*virtio_type, 0);
                 assert_eq!(device_id, "dummy");
-                assert_eq!(mmio_device.resources.addr, arch::MMIO_MEM_START);
+                assert_eq!(mmio_device.resources.addr, arch::MMIO32_MEM_START);
                 assert_eq!(mmio_device.resources.len, MMIO_LEN);
                 assert_eq!(
                     mmio_device.resources.irq,
