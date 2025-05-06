@@ -1051,7 +1051,7 @@ dependencies = [
  "log",
  "serde",
  "thiserror 2.0.12",
- "vm-allocator",
+ "vm-allocator 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "vm-device",
  "vm-memory",
 ]
@@ -1646,6 +1646,14 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 [[package]]
 name = "vm-allocator"
 version = "0.1.1"
+dependencies = [
+ "libc",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "vm-allocator"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e4ce718bd4e8d74b1747363e27f715a6b1bd6971597cb21425dadbf4e712241"
 dependencies = [
@@ -1724,7 +1732,7 @@ dependencies = [
  "utils",
  "uuid",
  "vhost",
- "vm-allocator",
+ "vm-allocator 0.1.1",
  "vm-device",
  "vm-fdt",
  "vm-memory",
