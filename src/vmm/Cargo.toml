@@ -44,7 +44,7 @@ userfaultfd = "0.8.1"
 utils = { path = "../utils" }
 uuid = "1.16.0"
 vhost = { version = "0.13.0", features = ["vhost-user-frontend"] }
-vm-allocator = { path = "../../../rust-vmm/vm-allocator" }
+vm-allocator = { git = "https://github.com/bchalios/vm-allocator" }
 vm-device = { path = "../vm-device" }
 vm-memory = { version = "0.16.1", features = [
   "backend-mmap",

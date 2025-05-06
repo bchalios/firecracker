@@ -17,6 +17,7 @@ use linux_loader::loader::Cmdline;
 use log::error;
 use mmio::{MMIODeviceManager, MmioError};
 use pci::DeviceRelocation;
+use pci_mngr::{PciDevices, PciManagerError};
 use persist::{ACPIDeviceManagerConstructorArgs, MMIODevManagerConstructorArgs};
 use resources::ResourceAllocator;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,8 @@ pub mod acpi;
 pub mod legacy;
 /// Memory Mapped I/O Manager.
 pub mod mmio;
+/// PCIe device manager
+pub mod pci_mngr;
 /// Device managers (de)serialization support.
 pub mod persist;
 /// Resource manager for devices.
@@ -105,6 +108,8 @@ pub struct DeviceManager {
     pub legacy_devices: PortIODeviceManager,
     /// ACPI devices
     pub acpi_devices: ACPIDeviceManager,
+    /// PCIe devices
+    pub pci_devices: PciDevices,
 }
 
 impl DeviceManager {
@@ -166,6 +171,7 @@ impl DeviceManager {
             #[cfg(target_arch = "x86_64")]
             legacy_devices,
             acpi_devices: ACPIDeviceManager::new(),
+            pci_devices: PciDevices::new(),
         })
     }
 
@@ -244,6 +250,12 @@ impl DeviceManager {
         self.mmio_devices
             .register_mmio_rtc(&self.resource_allocator, rtc, None)?;
         Ok(())
+    }
+
+    /// Enables PCIe support for Firecracker devices
+    pub fn enable_pci(&mut self) -> Result<(), PciManagerError> {
+        self.pci_devices
+            .attach_pci_segment(&self.resource_allocator)
     }
 }
 
@@ -381,6 +393,7 @@ pub(crate) mod tests {
     pub(crate) fn default_device_manager() -> DeviceManager {
         let mmio_devices = MMIODeviceManager::new();
         let acpi_devices = ACPIDeviceManager::new();
+        let pci_devices = PciDevices::new();
         let resource_allocator = Arc::new(ResourceAllocator::new().unwrap());
 
         #[cfg(target_arch = "x86_64")]
@@ -400,6 +413,7 @@ pub(crate) mod tests {
             #[cfg(target_arch = "x86_64")]
             legacy_devices,
             acpi_devices,
+            pci_devices,
         }
     }
 
