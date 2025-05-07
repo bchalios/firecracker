@@ -154,7 +154,7 @@ def test_serial_dos(uvm_plain_any):
 
     # Check if the total memory size changed.
     before_size = get_total_mem_size(microvm.firecracker_pid)
-    send_bytes(tty_fd, 100000000, timeout=1)
+    send_bytes(tty_fd, 200000000, timeout=1)
     after_size = get_total_mem_size(microvm.firecracker_pid)
     assert before_size == after_size, (
         "The memory size of the "
