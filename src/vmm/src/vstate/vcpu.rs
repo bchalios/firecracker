@@ -18,7 +18,7 @@ use kvm_ioctls::VcpuExit;
 #[cfg(feature = "gdb")]
 use kvm_ioctls::VcpuFd;
 use libc::{c_int, c_void, siginfo_t};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use vmm_sys_util::errno;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -527,6 +527,9 @@ fn handle_kvm_exit(
             VcpuExit::MmioRead(addr, data) => {
                 if let Some(mmio_bus) = &peripherals.mmio_bus {
                     let _metric = METRICS.vcpu.exit_mmio_read_agg.record_latency_metrics();
+                    if addr >= 0x4000_2000 {
+                        debug!("MMIO read: {:x} bytes @{addr:#x}", data.len());
+                    }
                     if let Err(err) = mmio_bus.read(addr, data) {
                         warn!("Invalid MMIO read @ {addr:#x}:{:#x}: {err}", data.len());
                     }
@@ -537,6 +540,9 @@ fn handle_kvm_exit(
             VcpuExit::MmioWrite(addr, data) => {
                 if let Some(mmio_bus) = &peripherals.mmio_bus {
                     let _metric = METRICS.vcpu.exit_mmio_write_agg.record_latency_metrics();
+                    if addr >= 0x4000_2000 {
+                        debug!("MMIO write: {:x} bytes @{addr:#x}", data.len());
+                    }
                     if let Err(err) = mmio_bus.write(addr, data) {
                         warn!("Invalid MMIO read @ {addr:#x}:{:#x}: {err}", data.len());
                     }
