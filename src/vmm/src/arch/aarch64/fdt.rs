@@ -28,6 +28,8 @@ use crate::vstate::memory::{Address, GuestMemory, GuestMemoryMmap};
 const GIC_PHANDLE: u32 = 1;
 // This is a value for uniquely identifying the FDT node containing the clock definition.
 const CLOCK_PHANDLE: u32 = 2;
+// This is a value for uniquely identifying the FDT node declaring the MSI controller.
+const MSI_PHANDLE: u32 = 3;
 // You may be wondering why this big value?
 // This phandle is used to uniquely identify the FDT nodes containing cache information. Each cpu
 // can have a variable number of caches, some of these caches may be shared with other cpus.
@@ -300,8 +302,16 @@ fn create_gic_node(fdt: &mut FdtWriter, gic_device: &GICDevice) -> Result<(), Fd
         gic_device.fdt_maint_irq(),
         IRQ_TYPE_LEVEL_HI,
     ];
-
     fdt.property_array_u32("interrupts", &gic_intr)?;
+
+    if let Some(properties) = gic_device.msi_properties() {
+        let msic_node = fdt.begin_node(&format!("gic-its@{:x}", properties.addr))?;
+        fdt.property_string("compatible", &properties.compatibility)?;
+        fdt.property_null("msi-controller")?;
+        fdt.property_u32("phandle", MSI_PHANDLE)?;
+        fdt.property_array_u64("reg", &[properties.addr, properties.size])?;
+        fdt.end_node(msic_node)?;
+    }
     fdt.end_node(interrupt)?;
 
     Ok(())
@@ -490,6 +500,23 @@ fn create_pci_nodes(fdt: &mut FdtWriter, pci_devices: &PciDevices) -> Result<(),
     fdt.property_null("interrupt-map")?;
     fdt.property_null("interrupt-map-mask")?;
     fdt.property_null("dma-coherent")?;
+
+    // See kernel document Documentation/devicetree/bindings/pci/pci-msi.txt
+    let msi_map = [
+        // rid-base: A single cell describing the first RID matched by the entry.
+        0x0,
+        // msi-controller: A single phandle to an MSI controller.
+        MSI_PHANDLE,
+        // msi-base: An msi-specifier describing the msi-specifier produced for the
+        // first RID matched by the entry.
+        (segment.id as u32) << 8,
+        // length: A single cell describing how many consecutive RIDs are matched
+        // following the rid-base.
+        0x100,
+    ];
+
+    fdt.property_array_u32("msi-map", &msi_map)?;
+    fdt.property_u32("msi-parent", MSI_PHANDLE)?;
     Ok(fdt.end_node(pci_node)?)
 }
 

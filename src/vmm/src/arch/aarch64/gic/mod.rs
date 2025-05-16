@@ -143,6 +143,25 @@ impl GICDevice {
             Self::V3(x) => x.restore_device(mpidrs, state),
         }
     }
+
+    /// Returns whether the GIC device is MSI compatible or not
+    pub fn msi_properties(&self) -> Option<GicMsiProperties> {
+        match self {
+            Self::V2(x) => x.msi_properties(),
+            Self::V3(x) => x.msi_properties(),
+        }
+    }
+}
+
+/// MSI properties of the GIC device
+#[derive(Debug)]
+pub struct GicMsiProperties {
+    /// MSI compatibility property of the GIC device,
+    pub compatibility: String,
+    /// MSI address
+    pub addr: u64,
+    /// MSI size
+    pub size: u64,
 }
 
 /// Create a GIC device.

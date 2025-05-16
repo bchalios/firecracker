@@ -5,7 +5,7 @@ mod regs;
 
 use kvm_ioctls::{DeviceFd, VmFd};
 
-use crate::arch::aarch64::gic::{GicError, GicState};
+use crate::arch::aarch64::gic::{GicError, GicMsiProperties, GicState};
 
 /// Represent a GIC v2 device
 #[derive(Debug)]
@@ -176,5 +176,10 @@ impl GICv2 {
             .map_err(|err| GicError::DeviceAttribute(err, true, group))?;
 
         Ok(())
+    }
+
+    /// Returns the MSI compatibility property of the device, if it is MSI compatible
+    pub fn msi_properties(&self) -> Option<GicMsiProperties> {
+        None
     }
 }

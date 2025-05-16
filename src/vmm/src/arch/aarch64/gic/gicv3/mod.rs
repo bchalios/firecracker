@@ -5,7 +5,7 @@ mod regs;
 
 use kvm_ioctls::{DeviceFd, VmFd};
 
-use crate::arch::aarch64::gic::{GicError, GicState};
+use crate::arch::aarch64::gic::{GicError, GicMsiProperties, GicState};
 
 #[derive(Debug)]
 pub struct GICv3(super::GIC);
@@ -24,6 +24,7 @@ impl GICv3 {
     const SZ_64K: u64 = 0x0001_0000;
     const KVM_VGIC_V3_DIST_SIZE: u64 = GICv3::SZ_64K;
     const KVM_VGIC_V3_REDIST_SIZE: u64 = (2 * GICv3::SZ_64K);
+    const KVM_VGIC_V3_ITS_SIZE: u64 = 0x02_0000;
 
     // Device trees specific constants
     const ARCH_GIC_V3_MAINT_IRQ: u32 = 9;
@@ -60,12 +61,13 @@ impl GICv3 {
 
     /// Create the GIC device object
     pub fn create_device(fd: DeviceFd, vcpu_count: u64) -> Self {
+        let redists_addr = GICv3::get_redists_addr(vcpu_count);
         GICv3(super::GIC {
             fd,
             properties: [
                 GICv3::get_dist_addr(),
                 GICv3::get_dist_size(),
-                GICv3::get_redists_addr(vcpu_count),
+                redists_addr,
                 GICv3::get_redists_size(vcpu_count),
             ],
             vcpu_count,
@@ -177,6 +179,15 @@ impl GICv3 {
             .map_err(|err| GicError::DeviceAttribute(err, true, group))?;
 
         Ok(())
+    }
+
+    /// Returns the MSI compatibility property of the device, if it is MSI compatible
+    pub fn msi_properties(&self) -> Option<GicMsiProperties> {
+        Some(GicMsiProperties {
+            compatibility: "arm,gic-v3-its".to_string(),
+            addr: self.properties[2] - Self::KVM_VGIC_V3_ITS_SIZE,
+            size: Self::KVM_VGIC_V3_ITS_SIZE,
+        })
     }
 }
 
