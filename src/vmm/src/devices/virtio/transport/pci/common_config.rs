@@ -18,7 +18,7 @@ use crate::devices::virtio::queue::Queue;
 use crate::logger::{debug, error, info, trace, warn};
 pub const VIRTIO_PCI_COMMON_CONFIG_ID: &str = "virtio_pci_common_config";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtioPciCommonConfigState {
     pub driver_status: u8,
     pub config_generation: u8,
@@ -79,6 +79,7 @@ pub struct VirtioPciCommonConfigState {
 const VRING_DESC_ELEMENT_SIZE: usize = 16;
 const VRING_AVAIL_ELEMENT_SIZE: usize = 2;
 const VRING_USED_ELEMENT_SIZE: usize = 8;
+#[derive(Debug)]
 pub enum VringType {
     Desc,
     Avail,
@@ -118,6 +119,7 @@ pub fn get_vring_size(t: VringType, queue_size: u16) -> u64 {
 ///    le64 queue_desc;                // 0x20 // read-write
 ///    le64 queue_avail;               // 0x28 // read-write
 ///    le64 queue_used;                // 0x30 // read-write
+#[derive(Debug)]
 pub struct VirtioPciCommonConfig {
     pub driver_status: u8,
     pub config_generation: u8,
@@ -211,7 +213,7 @@ impl VirtioPciCommonConfig {
     }
 
     fn write_common_config_byte(&mut self, offset: u64, value: u8) {
-        debug!("write_common_config_byte: offset 0x{:x}", offset);
+        debug!("write_common_config_byte: offset 0x{offset:x}: {value:x}");
         match offset {
             0x14 => self.driver_status = value,
             _ => {
@@ -224,7 +226,7 @@ impl VirtioPciCommonConfig {
         debug!("read_common_config_word: offset 0x{:x}", offset);
         match offset {
             0x10 => self.msix_config.load(Ordering::Acquire),
-            0x12 => queues.len() as u16, // num_queues
+            0x12 => queues.len().try_into().unwrap(), // num_queues
             0x16 => self.queue_select,
             0x18 => self.with_queue(queues, |q| q.size).unwrap_or(0),
             0x1a => self.msix_queues.lock().unwrap()[self.queue_select as usize],
@@ -242,7 +244,7 @@ impl VirtioPciCommonConfig {
         match offset {
             0x10 => self.msix_config.store(value, Ordering::Release),
             0x16 => self.queue_select = value,
-            0x18 => self.with_queue_mut(queues, |q| q.size = (value & 0xffff) as u16),
+            0x18 => self.with_queue_mut(queues, |q| q.size = value),
             0x1a => self.msix_queues.lock().unwrap()[self.queue_select as usize] = value,
             0x1c => self.with_queue_mut(queues, |q| {
                 q.ready = value == 1;
@@ -262,7 +264,8 @@ impl VirtioPciCommonConfig {
                 // Only 64 bits of features (2 pages) are defined for now, so limit
                 // device_feature_select to avoid shifting by 64 or more bits.
                 if self.device_feature_select < 2 {
-                    (locked_device.avail_features() >> (self.device_feature_select * 32)) as u32
+                    ((locked_device.avail_features() >> (self.device_feature_select * 32))
+                        & 0xffff_ffff) as u32
                 } else {
                     0
                 }

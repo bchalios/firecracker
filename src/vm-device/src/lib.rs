@@ -34,7 +34,7 @@ pub enum PciBarType {
 
 /// Enumeration for device resources.
 #[allow(missing_docs)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, displaydoc::Display, Debug, Serialize, Deserialize)]
 pub enum Resource {
     /// IO Port address range.
     PioAddressRange { base: u16, size: u16 },

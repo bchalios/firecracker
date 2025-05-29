@@ -32,7 +32,6 @@ use crate::devices::legacy::serial::SerialOut;
 use crate::devices::legacy::{IER_RDA_BIT, IER_RDA_OFFSET, SerialDevice};
 use crate::devices::pseudo::BootTimer;
 use crate::devices::virtio::device::VirtioDevice;
-use crate::devices::virtio::transport::mmio::{IrqTrigger, MmioTransport};
 use crate::resources::VmResources;
 use crate::snapshot::Persist;
 use crate::vstate::memory::GuestMemoryMmap;
@@ -40,6 +39,8 @@ use crate::{EmulateSerialInitError, EventManager};
 
 /// ACPI device manager.
 pub mod acpi;
+/// Device interrupts.
+pub mod interrupt;
 /// Legacy Device Manager.
 pub mod legacy;
 /// Memory Mapped I/O Manager.
@@ -64,12 +65,21 @@ pub enum DeviceManagerCreateError {
 }
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
-/// Error while attaching a VirtIO device
+/// Error while attaching an MMIO device
 pub enum AttachMmioDeviceError {
     /// MMIO transport error: {0}
     MmioTransport(#[from] MmioError),
     /// Error inserting device in bus: {0}
     Bus(#[from] vm_device::BusError),
+}
+
+#[derive(Debug, thiserror::Error, displaydoc::Display)]
+/// Error while attaching a VirtIO device
+pub enum AttachVirtioDeviceError {
+    /// Error attaching MMIO device: {0}
+    Mmio(#[from] MmioError),
+    /// Error attaching PCI device: {0}
+    Pci(#[from] PciManagerError),
 }
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -143,7 +153,7 @@ impl DeviceManager {
     pub fn new(
         event_manager: &mut EventManager,
         vcpu_exit_evt: &EventFd,
-        vmfd: &VmFd,
+        vmfd: &Arc<VmFd>,
     ) -> Result<Self, DeviceManagerCreateError> {
         let resource_allocator = Arc::new(ResourceAllocator::new()?);
         #[cfg(target_arch = "x86_64")]
@@ -164,13 +174,15 @@ impl DeviceManager {
             legacy_devices
         };
 
+        let pci_devices = PciDevices::new(&resource_allocator, vmfd);
+
         Ok(DeviceManager {
             resource_allocator,
             mmio_devices: MMIODeviceManager::new(),
             #[cfg(target_arch = "x86_64")]
             legacy_devices,
             acpi_devices: ACPIDeviceManager::new(),
-            pci_devices: PciDevices::new(),
+            pci_devices,
         })
     }
 
@@ -183,17 +195,26 @@ impl DeviceManager {
         device: Arc<Mutex<T>>,
         cmdline: &mut Cmdline,
         is_vhost_user: bool,
-    ) -> Result<(), AttachMmioDeviceError> {
-        let interrupt = Arc::new(IrqTrigger::new());
-        // The device mutex mustn't be locked here otherwise it will deadlock.
-        let device = MmioTransport::new(mem.clone(), interrupt, device, is_vhost_user);
-        self.mmio_devices.register_mmio_virtio_for_boot(
-            vmfd,
-            &self.resource_allocator,
-            id,
-            device,
-            cmdline,
-        )?;
+    ) -> Result<(), AttachVirtioDeviceError> {
+        if self.pci_devices.pci_segment.is_some() {
+            self.pci_devices.attach_pci_virtio_device(
+                mem,
+                vmfd,
+                id,
+                device,
+                &self.resource_allocator,
+            )?;
+        } else {
+            self.mmio_devices.attach_mmio_virtio_device(
+                mem,
+                vmfd,
+                &self.resource_allocator,
+                id,
+                device,
+                cmdline,
+                is_vhost_user,
+            )?;
+        }
 
         Ok(())
     }
@@ -385,11 +406,11 @@ pub(crate) mod tests {
     #[cfg(target_arch = "aarch64")]
     use crate::builder::tests::default_vmm;
 
-    pub(crate) fn default_device_manager() -> DeviceManager {
+    pub(crate) fn default_device_manager(vm_fd: &Arc<VmFd>) -> DeviceManager {
         let mmio_devices = MMIODeviceManager::new();
         let acpi_devices = ACPIDeviceManager::new();
-        let pci_devices = PciDevices::new();
         let resource_allocator = Arc::new(ResourceAllocator::new().unwrap());
+        let pci_devices = PciDevices::new(&resource_allocator, vm_fd);
 
         #[cfg(target_arch = "x86_64")]
         let legacy_devices = PortIODeviceManager::new(

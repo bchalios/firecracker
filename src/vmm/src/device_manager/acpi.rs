@@ -26,7 +26,7 @@ impl ACPIDeviceManager {
         vmgenid: VmGenId,
         vm_fd: &VmFd,
     ) -> Result<(), kvm_ioctls::Error> {
-        vm_fd.register_irqfd(&vmgenid.interrupt_evt, vmgenid.gsi)?;
+        vm_fd.register_irqfd(&vmgenid.interrupt_evt, vmgenid.irq)?;
         self.vmgenid = Some(vmgenid);
         Ok(())
     }
@@ -57,7 +57,7 @@ impl Aml for ACPIDeviceManager {
                                 true,
                                 false,
                                 false,
-                                vmgenid.gsi,
+                                vmgenid.irq,
                             )]),
                         )?,
                         &aml::Method::new(
@@ -70,7 +70,7 @@ impl Aml for ACPIDeviceManager {
                                 // ARM (look into
                                 // `vmm::crate::arch::layout::IRQ_MAX`)
                                 #[allow(clippy::cast_possible_truncation)]
-                                &aml::Equal::new(&aml::Arg(0), &(vmgenid.gsi as u8)),
+                                &aml::Equal::new(&aml::Arg(0), &(vmgenid.irq as u8)),
                                 vec![&aml::Notify::new(
                                     &aml::Path::new("\\_SB_.VGEN")?,
                                     &0x80usize,

@@ -274,7 +274,7 @@ fn create_vmgenid_node(fdt: &mut FdtWriter, vmgenid: &Option<VmGenId>) -> Result
         fdt.property_array_u64("reg", &[vmgenid_info.guest_address.0, VMGENID_MEM_SIZE])?;
         fdt.property_array_u32(
             "interrupts",
-            &[GIC_FDT_IRQ_TYPE_SPI, vmgenid_info.gsi, IRQ_TYPE_EDGE_RISING],
+            &[GIC_FDT_IRQ_TYPE_SPI, vmgenid_info.irq, IRQ_TYPE_EDGE_RISING],
         )?;
         fdt.end_node(vmgenid)?;
     }
@@ -524,9 +524,9 @@ mod tests {
     fn test_create_fdt_with_devices() {
         let mem = arch_mem(layout::FDT_MAX_SIZE + 0x1000);
         let mut event_manager = EventManager::new().unwrap();
-        let mut device_manager = default_device_manager();
         let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
+        let vm = Arc::new(kvm.create_vm().unwrap());
+        let mut device_manager = default_device_manager(&vm);
         let gic = create_gic(&vm, 1, None).unwrap();
         let mut cmdline = kernel_cmdline::Cmdline::new(4096).unwrap();
         cmdline.insert("console", "/dev/tty0").unwrap();
@@ -561,9 +561,9 @@ mod tests {
     #[test]
     fn test_create_fdt_with_vmgenid() {
         let mem = arch_mem(layout::FDT_MAX_SIZE + 0x1000);
-        let mut device_manager = default_device_manager();
         let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
+        let vm = Arc::new(kvm.create_vm().unwrap());
+        let mut device_manager = default_device_manager(&vm);
         let gic = create_gic(&vm, 1, None).unwrap();
         let mut cmdline = kernel_cmdline::Cmdline::new(4096).unwrap();
         cmdline.insert("console", "/dev/tty0").unwrap();
@@ -584,9 +584,9 @@ mod tests {
     #[test]
     fn test_create_fdt() {
         let mem = arch_mem(layout::FDT_MAX_SIZE + 0x1000);
-        let device_manager = default_device_manager();
         let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
+        let vm = Arc::new(kvm.create_vm().unwrap());
+        let device_manager = default_device_manager(&vm);
         let gic = create_gic(&vm, 1, None).unwrap();
 
         let saved_dtb_bytes = match gic.fdt_compatibility() {
@@ -641,9 +641,10 @@ mod tests {
     #[test]
     fn test_create_fdt_with_initrd() {
         let mem = arch_mem(layout::FDT_MAX_SIZE + 0x1000);
-        let device_manager = default_device_manager();
         let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
+        let vm = Arc::new(kvm.create_vm().unwrap());
+        let device_manager = default_device_manager(&vm);
+
         let gic = create_gic(&vm, 1, None).unwrap();
 
         let saved_dtb_bytes = match gic.fdt_compatibility() {

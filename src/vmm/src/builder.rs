@@ -26,7 +26,8 @@ use crate::cpu_config::templates::{
 use crate::device_manager::AttachLegacyMmioDeviceError;
 use crate::device_manager::pci_mngr::PciManagerError;
 use crate::device_manager::{
-    AttachMmioDeviceError, AttachVmgenidError, DeviceManager, DevicePersistError, DeviceRestoreArgs,
+    AttachMmioDeviceError, AttachVirtioDeviceError, AttachVmgenidError, DeviceManager,
+    DevicePersistError, DeviceRestoreArgs,
 };
 use crate::devices::acpi::vmgenid::VmGenIdError;
 use crate::devices::virtio::balloon::Balloon;
@@ -47,7 +48,7 @@ use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::GuestRegionMmap;
 use crate::vstate::vcpu::{Vcpu, VcpuError};
 use crate::vstate::vm::Vm;
-use crate::{EventManager, Vmm, VmmError, device_manager};
+use crate::{EventManager, Vmm, VmmError};
 
 /// Errors associated with starting the instance.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -69,7 +70,7 @@ pub enum StartMicrovmError {
     CreateRateLimiter(io::Error),
     /// Error creating legacy device: {0}
     #[cfg(target_arch = "x86_64")]
-    CreateLegacyDevice(device_manager::legacy::LegacyDeviceError),
+    CreateLegacyDevice(crate::device_manager::legacy::LegacyDeviceError),
     /// Error creating VMGenID device: {0}
     CreateVMGenID(VmGenIdError),
     /// Error enabling PCIe support: {0}
@@ -99,8 +100,10 @@ pub enum StartMicrovmError {
     NetDeviceNotConfigured,
     /// Cannot open the block device backing file: {0}
     OpenBlockDevice(io::Error),
-    /// Cannot initialize a MMIO Device or add a device to the MMIO Bus or cmdline: {0}
-    RegisterMmioDevice(#[from] device_manager::AttachMmioDeviceError),
+    /// Cannot initialize a VirtIO device: {0}
+    RegisterVirtioDevice(#[from] AttachVirtioDeviceError),
+    /// Cannot initialize a legacy MMIO device: {0}
+    RegisterLegacyMmioDevice(#[from] AttachMmioDeviceError),
     /// Cannot restore microvm state: {0}
     RestoreMicrovmState(MicrovmStateError),
     /// Cannot set vm resources: {0}
@@ -543,7 +546,7 @@ fn attach_entropy_device(
     cmdline: &mut LoaderKernelCmdline,
     entropy_device: &Arc<Mutex<Entropy>>,
     event_manager: &mut EventManager,
-) -> Result<(), AttachMmioDeviceError> {
+) -> Result<(), AttachVirtioDeviceError> {
     let id = entropy_device
         .lock()
         .expect("Poisoned lock")
@@ -623,7 +626,7 @@ fn attach_unixsock_vsock_device(
     cmdline: &mut LoaderKernelCmdline,
     unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,
     event_manager: &mut EventManager,
-) -> Result<(), AttachMmioDeviceError> {
+) -> Result<(), AttachVirtioDeviceError> {
     let id = String::from(unix_vsock.lock().expect("Poisoned lock").id());
     event_manager.add_subscriber(unix_vsock.clone());
     // The device mutex mustn't be locked here otherwise it will deadlock.
@@ -642,7 +645,7 @@ fn attach_balloon_device(
     cmdline: &mut LoaderKernelCmdline,
     balloon: &Arc<Mutex<Balloon>>,
     event_manager: &mut EventManager,
-) -> Result<(), AttachMmioDeviceError> {
+) -> Result<(), AttachVirtioDeviceError> {
     let id = String::from(balloon.lock().expect("Poisoned lock").id());
     event_manager.add_subscriber(balloon.clone());
     // The device mutex mustn't be locked here otherwise it will deadlock.
@@ -738,6 +741,8 @@ pub(crate) mod tests {
 
         let (_, vcpus_exit_evt) = vm.create_vcpus(1).unwrap();
 
+        let device_manager = default_device_manager(vm.fd());
+
         Vmm {
             events_observer: Some(std::io::stdin()),
             instance_info: InstanceInfo::default(),
@@ -747,7 +752,7 @@ pub(crate) mod tests {
             uffd: None,
             vcpus_handles: Vec::new(),
             vcpus_exit_evt,
-            device_manager: default_device_manager(),
+            device_manager,
         }
     }
 

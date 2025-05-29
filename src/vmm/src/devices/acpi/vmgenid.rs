@@ -34,8 +34,8 @@ pub struct VmGenId {
     pub interrupt_evt: EventFdTrigger,
     /// Guest physical address where VMGenID data lives.
     pub guest_address: GuestAddress,
-    /// GSI number for the device
-    pub gsi: u32,
+    /// IRQ number for the device
+    pub irq: u32,
 }
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -52,15 +52,15 @@ pub enum VmGenIdError {
 
 impl VmGenId {
     /// Create a new Vm Generation Id device using an address in the guest for writing the
-    /// generation ID and a GSI for sending device notifications.
+    /// generation ID and a IRQ for sending device notifications.
     pub fn from_parts(
         guest_address: GuestAddress,
-        gsi: u32,
+        irq: u32,
         mem: &GuestMemoryMmap,
     ) -> Result<Self, VmGenIdError> {
         debug!(
             "vmgenid: building VMGenID device. Address: {:#010x}. IRQ: {}",
-            guest_address.0, gsi
+            guest_address.0, irq
         );
         let interrupt_evt = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK)?);
         let gen_id = Self::make_genid()?;
@@ -77,18 +77,18 @@ impl VmGenId {
             gen_id,
             interrupt_evt,
             guest_address,
-            gsi,
+            irq,
         })
     }
 
     /// Create a new VMGenID device
     ///
-    /// Allocate memory and a GSI for sending notifications and build the device
+    /// Allocate memory and a IRQ for sending notifications and build the device
     pub fn new(
         mem: &GuestMemoryMmap,
         resource_allocator: &ResourceAllocator,
     ) -> Result<Self, VmGenIdError> {
-        let gsi = resource_allocator.allocate_gsi(1)?;
+        let irq = resource_allocator.allocate_irq(1)?;
         // The generation ID needs to live in an 8-byte aligned buffer
         let addr = resource_allocator.allocate_system_memory(
             VMGENID_MEM_SIZE,
@@ -96,7 +96,7 @@ impl VmGenId {
             vm_allocator::AllocPolicy::LastMatch,
         )?;
 
-        Self::from_parts(GuestAddress(addr), gsi[0], mem)
+        Self::from_parts(GuestAddress(addr), irq[0], mem)
     }
 
     // Create a 16-bytes random number
@@ -124,8 +124,8 @@ impl VmGenId {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct VMGenIDState {
-    /// GSI used for VMGenID device
-    pub gsi: u32,
+    /// IRQ used for VMGenID device
+    pub irq: u32,
     /// memory address of generation ID
     pub addr: u64,
 }
@@ -143,7 +143,7 @@ impl<'a> Persist<'a> for VmGenId {
 
     fn save(&self) -> Self::State {
         VMGenIDState {
-            gsi: self.gsi,
+            irq: self.irq,
             addr: self.guest_address.0,
         }
     }
@@ -157,7 +157,7 @@ impl<'a> Persist<'a> for VmGenId {
             8,
             vm_allocator::AllocPolicy::ExactMatch(state.addr),
         )?;
-        Self::from_parts(GuestAddress(state.addr), state.gsi, constructor_args.mem)
+        Self::from_parts(GuestAddress(state.addr), state.irq, constructor_args.mem)
     }
 }
 

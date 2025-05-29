@@ -30,7 +30,7 @@ use crate::{DirtyBitmap, Vcpu, mem_size_mib};
 #[derive(Debug)]
 pub struct VmCommon {
     /// The KVM file descriptor used to access this Vm.
-    pub fd: VmFd,
+    pub fd: Arc<VmFd>,
     max_memslots: usize,
     /// The guest memory of this Vm.
     pub guest_memory: GuestMemoryMmap,
@@ -85,7 +85,7 @@ impl Vm {
         let mut attempt = 1;
         let fd = loop {
             match kvm.fd.create_vm() {
-                Ok(fd) => break fd,
+                Ok(fd) => break Arc::new(fd),
                 Err(e) if e.errno() == libc::EINTR && attempt < MAX_ATTEMPTS => {
                     info!("Attempt #{attempt} of KVM_CREATE_VM returned EINTR");
                     // Exponential backoff (1us, 2us, 4us, and 8us => 15us in total)
@@ -176,7 +176,7 @@ impl Vm {
     }
 
     /// Gets a reference to the kvm file descriptor owned by this VM.
-    pub fn fd(&self) -> &VmFd {
+    pub fn fd(&self) -> &Arc<VmFd> {
         &self.common.fd
     }
 

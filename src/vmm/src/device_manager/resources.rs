@@ -10,16 +10,18 @@ use vm_device::Bus;
 
 use crate::arch;
 
-/// A resource manager for (de)allocating interrupt lines (GSIs) and guest memory
+/// A resource manager for (de)allocating interrupt lines (IRQs) and guest memory
 ///
 /// At the moment, we support:
 ///
-/// * GSIs for legacy x86_64 devices
-/// * GSIs for MMIO devicecs
+/// * IRQs for legacy x86_64 devices
+/// * IRQs for MMIO devicecs
 /// * Memory allocations in the MMIO address space
 #[derive(Debug)]
 pub struct ResourceAllocator {
     // Allocator for device interrupt lines
+    pub irq_allocator: Arc<Mutex<IdAllocator>>,
+    // Allocator for GSI numbers
     pub gsi_allocator: Arc<Mutex<IdAllocator>>,
     // Allocator for memory in the 32-bit MMIO address space
     pub mmio32_memory: Arc<Mutex<AddressAllocator>>,
@@ -38,7 +40,8 @@ impl ResourceAllocator {
     /// Create a new resource allocator for Firecracker devices
     pub fn new() -> Result<Self, vm_allocator::Error> {
         Ok(Self {
-            gsi_allocator: Arc::new(Mutex::new(IdAllocator::new(arch::IRQ_BASE, arch::IRQ_MAX)?)),
+            irq_allocator: Arc::new(Mutex::new(IdAllocator::new(arch::IRQ_BASE, arch::IRQ_MAX)?)),
+            gsi_allocator: Arc::new(Mutex::new(IdAllocator::new(arch::IRQ_MAX + 1, u32::MAX)?)),
             mmio32_memory: Arc::new(Mutex::new(AddressAllocator::new(
                 arch::MEM_32BIT_DEVICES_START,
                 arch::MEM_32BIT_DEVICES_SIZE,
@@ -57,29 +60,46 @@ impl ResourceAllocator {
         })
     }
 
-    /// Allocate a number of GSIs
-    ///
-    /// # Arguments
-    ///
-    /// * `gsi_count` - The number of GSIs to allocate
-    pub fn allocate_gsi(&self, gsi_count: u32) -> Result<Vec<u32>, vm_allocator::Error> {
-        let mut gsi_allocator = self.gsi_allocator.lock().expect("Poisoned lock");
-        let mut gsis = Vec::with_capacity(gsi_count as usize);
+    fn allocate_id(
+        allocator: &mut IdAllocator,
+        id_count: u32,
+    ) -> Result<Vec<u32>, vm_allocator::Error> {
+        let mut ids = Vec::with_capacity(id_count as usize);
 
-        for _ in 0..gsi_count {
-            match gsi_allocator.allocate_id() {
-                Ok(gsi) => gsis.push(gsi),
+        for _ in 0..id_count {
+            match allocator.allocate_id() {
+                Ok(id) => ids.push(id),
                 Err(err) => {
-                    // It is ok to unwrap here, we just allocated the GSI
-                    gsis.into_iter().for_each(|gsi| {
-                        gsi_allocator.free_id(gsi).unwrap();
+                    // It is ok to unwrap here, we just allocated the id
+                    ids.into_iter().for_each(|id| {
+                        allocator.free_id(id).unwrap();
                     });
                     return Err(err);
                 }
             }
         }
 
-        Ok(gsis)
+        Ok(ids)
+    }
+
+    /// Allocate a number of IRQs
+    ///
+    /// # Arguments
+    ///
+    /// * `irq_count` - The number of IRQs to allocate
+    pub fn allocate_irq(&self, irq_count: u32) -> Result<Vec<u32>, vm_allocator::Error> {
+        let mut irq_allocator = self.irq_allocator.lock().expect("Poisoned lock");
+        Self::allocate_id(&mut irq_allocator, irq_count)
+    }
+
+    /// Allocate a number of GSIs
+    ///
+    /// # Arguments
+    ///
+    /// * `irq_count` - The number of IRQs to allocate
+    pub fn allocate_gsi(&self, gsi_count: u32) -> Result<Vec<u32>, vm_allocator::Error> {
+        let mut gsi_allocator = self.gsi_allocator.lock().expect("Poisoned lock");
+        Self::allocate_id(&mut gsi_allocator, gsi_count)
     }
 
     /// Allocate a memory range in 32-bit MMIO address space
@@ -173,41 +193,41 @@ mod tests {
     const MAX_IRQS: u32 = arch::IRQ_MAX - arch::IRQ_BASE + 1;
 
     #[test]
-    fn test_allocate_gsi() {
+    fn test_allocate_irq() {
         let allocator = ResourceAllocator::new().unwrap();
         // asking for 0 IRQs should return us an empty vector
-        assert_eq!(allocator.allocate_gsi(0), Ok(vec![]));
-        // We cannot allocate more GSIs than available
+        assert_eq!(allocator.allocate_irq(0), Ok(vec![]));
+        // We cannot allocate more IRQs than available
         assert_eq!(
-            allocator.allocate_gsi(MAX_IRQS + 1),
+            allocator.allocate_irq(MAX_IRQS + 1),
             Err(vm_allocator::Error::ResourceNotAvailable)
         );
         // But allocating all of them at once should work
         assert_eq!(
-            allocator.allocate_gsi(MAX_IRQS),
+            allocator.allocate_irq(MAX_IRQS),
             Ok((arch::IRQ_BASE..=arch::IRQ_MAX).collect::<Vec<_>>())
         );
-        // And now we ran out of GSIs
+        // And now we ran out of IRQs
         assert_eq!(
-            allocator.allocate_gsi(1),
+            allocator.allocate_irq(1),
             Err(vm_allocator::Error::ResourceNotAvailable)
         );
-        // But we should be able to ask for 0 GSIs
-        assert_eq!(allocator.allocate_gsi(0), Ok(vec![]));
+        // But we should be able to ask for 0 IRQs
+        assert_eq!(allocator.allocate_irq(0), Ok(vec![]));
 
         let allocator = ResourceAllocator::new().unwrap();
-        // We should be able to allocate 1 GSI
-        assert_eq!(allocator.allocate_gsi(1), Ok(vec![arch::IRQ_BASE]));
+        // We should be able to allocate 1 IRQ
+        assert_eq!(allocator.allocate_irq(1), Ok(vec![arch::IRQ_BASE]));
         // We can't allocate MAX_IRQS any more
         assert_eq!(
-            allocator.allocate_gsi(MAX_IRQS),
+            allocator.allocate_irq(MAX_IRQS),
             Err(vm_allocator::Error::ResourceNotAvailable)
         );
         // We can allocate another one and it should be the second available
-        assert_eq!(allocator.allocate_gsi(1), Ok(vec![arch::IRQ_BASE + 1]));
+        assert_eq!(allocator.allocate_irq(1), Ok(vec![arch::IRQ_BASE + 1]));
         // Let's allocate the rest in a loop
         for i in arch::IRQ_BASE + 2..=arch::IRQ_MAX {
-            assert_eq!(allocator.allocate_gsi(1), Ok(vec![i]));
+            assert_eq!(allocator.allocate_irq(1), Ok(vec![i]));
         }
     }
 }

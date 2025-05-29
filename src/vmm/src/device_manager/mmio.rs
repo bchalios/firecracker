@@ -12,8 +12,10 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(target_arch = "x86_64")]
 use acpi_tables::{Aml, aml};
+use event_manager::MutEventSubscriber;
 use kvm_ioctls::{IoEventAddress, VmFd};
 use linux_loader::cmdline as kernel_cmdline;
+use linux_loader::loader::Cmdline;
 #[cfg(target_arch = "x86_64")]
 use log::debug;
 use log::info;
@@ -32,11 +34,12 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::VirtioDevice;
 use crate::devices::virtio::net::Net;
 use crate::devices::virtio::rng::Entropy;
-use crate::devices::virtio::transport::mmio::MmioTransport;
+use crate::devices::virtio::transport::mmio::{IrqTrigger, MmioTransport};
 use crate::devices::virtio::vsock::{TYPE_VSOCK, Vsock, VsockUnixBackend};
 use crate::devices::virtio::{TYPE_BALLOON, TYPE_BLOCK, TYPE_NET, TYPE_RNG};
 #[cfg(target_arch = "x86_64")]
 use crate::vstate::memory::GuestAddress;
+use crate::vstate::memory::GuestMemoryMmap;
 
 /// Errors for MMIO device manager.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -172,7 +175,7 @@ impl MMIODeviceManager {
         resource_allocator: &ResourceAllocator,
         irq_count: u32,
     ) -> Result<MMIODeviceInfo, MmioError> {
-        let irq = match resource_allocator.allocate_gsi(irq_count)?[..] {
+        let irq = match resource_allocator.allocate_irq(irq_count)?[..] {
             [] => None,
             [irq] => NonZeroU32::new(irq),
             _ => return Err(MmioError::InvalidIrqConfig),
@@ -294,11 +297,11 @@ impl MMIODeviceManager {
         let device_info = if let Some(device_info) = device_info_opt {
             device_info
         } else {
-            let gsi = resource_allocator.allocate_gsi(1)?;
+            let irq = resource_allocator.allocate_irq(1)?;
             MMIODeviceInfo {
                 addr: SERIAL_MEM_START,
                 len: MMIO_LEN,
-                irq: NonZeroU32::new(gsi[0]),
+                irq: NonZeroU32::new(irq[0]),
             }
         };
 
@@ -353,11 +356,11 @@ impl MMIODeviceManager {
         let device_info = if let Some(device_info) = device_info_opt {
             device_info
         } else {
-            let gsi = resource_allocator.allocate_gsi(1)?;
+            let irq = resource_allocator.allocate_irq(1)?;
             MMIODeviceInfo {
                 addr: RTC_MEM_START,
                 len: MMIO_LEN,
-                irq: NonZeroU32::new(gsi[0]),
+                irq: NonZeroU32::new(irq[0]),
             }
         };
 
@@ -401,6 +404,26 @@ impl MMIODeviceManager {
         self.boot_timer = Some(device);
 
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Attaches a VirtioDevice with MMIO transport
+    pub(crate) fn attach_mmio_virtio_device<
+        T: 'static + VirtioDevice + MutEventSubscriber + Debug,
+    >(
+        &mut self,
+        mem: &GuestMemoryMmap,
+        vmfd: &VmFd,
+        resource_allocator: &ResourceAllocator,
+        id: String,
+        device: Arc<Mutex<T>>,
+        cmdline: &mut Cmdline,
+        is_vhost_user: bool,
+    ) -> Result<(), MmioError> {
+        let interrupt = Arc::new(IrqTrigger::new());
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        let device = MmioTransport::new(mem.clone(), interrupt, device, is_vhost_user);
+        self.register_mmio_virtio_for_boot(vmfd, resource_allocator, id, device, cmdline)
     }
 
     /// Gets the specified device.
