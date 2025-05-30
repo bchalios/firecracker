@@ -12,8 +12,8 @@ use std::{
 };
 
 use kvm_bindings::{
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KVM_MSI_VALID_DEVID, kvm_irq_routing,
-    kvm_irq_routing_entry,
+    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KVM_IRQCHIP_IOAPIC, KVM_MSI_VALID_DEVID,
+    kvm_irq_routing, kvm_irq_routing_entry,
 };
 use kvm_ioctls::VmFd;
 use log::debug;
@@ -123,6 +123,20 @@ impl MsiInterruptGroup {
         routes: &HashMap<u32, RoutingEntry>,
     ) -> Result<(), std::io::Error> {
         let mut entries = Vec::new();
+
+        for i in 0..24 {
+            let mut kvm_route = kvm_irq_routing_entry {
+                gsi: i,
+                type_: KVM_IRQ_ROUTING_IRQCHIP,
+                ..Default::default()
+            };
+
+            kvm_route.u.irqchip.irqchip = KVM_IRQCHIP_IOAPIC;
+            kvm_route.u.irqchip.pin = i;
+
+            entries.push(kvm_route);
+        }
+
         for (_, entry) in routes.iter() {
             if entry.masked {
                 continue;
